@@ -1,0 +1,25 @@
+[
+ {
+  "directory": "/home/cruvadio/computer_graphics",
+  "arguments": [
+   "/usr/bin/c++",
+   "-DGLEW_STATIC",
+   "-DTW_NO_DIRECT3D",
+   "-DTW_NO_LIB_PRAGMA",
+   "-DTW_STATIC",
+   "-D_CRT_SECURE_NO_WARNINGS",
+   "-I/home/cruvadio/computer_graphics/external/AntTweakBar-1.16/include",
+   "-I/home/cruvadio/computer_graphics/external/glfw-3.1.2/include",
+   "-I/home/cruvadio/computer_graphics/external/glm-0.9.7.1",
+   "-I/home/cruvadio/computer_graphics/external/glew-1.13.0/include",
+   "-I/home/cruvadio/computer_graphics/external/assimp-3.0.1270/include",
+   "-I/home/cruvadio/computer_graphics/external/bullet-2.81-rev2613/src",
+   "-I/home/cruvadio/computer_graphics/.",
+   "-o",
+   "CMakeFiles/main.dir/main.cpp.o",
+   "-c",
+   "/home/cruvadio/computer_graphics/main.cpp"
+  ],
+  "file": "/home/cruvadio/computer_graphics/main.cpp"
+ }
+]
