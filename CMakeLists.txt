@@ -1,14 +1,13 @@
-cmake_minimum_required(VERSION 2.8)
+cmake_minimum_required(VERSION 3.8)
 
 add_subdirectory (external)
 
 include_directories(
-	external/AntTweakBar-1.16/include/
+	include/
 	external/glfw-3.1.2/include/
 	external/glm-0.9.7.1/
 	external/glew-1.13.0/include/
-	external/assimp-3.0.1270/include/
-	external/bullet-2.81-rev2613/src/
+	external/assimp-5.0.1/include/
 	.
 )
 
@@ -26,7 +25,7 @@ add_definitions(
 	-D_CRT_SECURE_NO_WARNINGS
 )
 
-add_executable(main main.cpp)
+add_executable(main src/main.cpp)
 
 
 target_link_libraries(main
