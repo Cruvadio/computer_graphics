@@ -25,7 +25,7 @@ add_definitions(
 	-D_CRT_SECURE_NO_WARNINGS
 )
 
-add_executable(main src/main.cpp)
+add_executable(main src/main.cpp src/shader.cpp)
 
 
 target_link_libraries(main
