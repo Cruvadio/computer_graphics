@@ -3,6 +3,8 @@
 
 #include <GL/glew.h>
 #include <shader.hpp>
+#include <model.hpp>
+
 
 #define HEIGHT 768
 #define WIDTH 1024

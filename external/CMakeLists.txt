@@ -58,4 +58,6 @@ target_link_libraries(GLEW_1130
 ### ASSIMP ###
 # AssImp already has a CMakeLists.txt so let's use these
 
-add_subdirectory( assimp-5.0.1 )
+add_subdirectory( assimp-5.0.1/ )
+
+
