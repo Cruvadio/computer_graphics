@@ -18,10 +18,10 @@ set(ALL_LIBS
 	${OPENGL_LIBRARY}
 	glfw
 	GLEW_1130
-	assimp
 )
 
 add_definitions(
+	-fopenmp
 	-DTW_STATIC
 	-DTW_NO_LIB_PRAGMA
 	-DTW_NO_DIRECT3D
@@ -31,7 +31,7 @@ add_definitions(
 set(ASSIMP_LIBRARY_DIRS "external/assimp-5.0.1/build/code")
 link_directories(${ASSIMP_LIBRARY_DIRS})
 
-add_executable(main src/main1.cpp)
+add_executable(main src/main.cpp)
 
 
 target_link_libraries(main
