@@ -3,26 +3,30 @@
 
 #include <glm/glm.hpp>
 #include <omp.h>
+//#include <openacc.h>
 #include<glm/common.hpp>
 #include<cstdlib>
 #include<ctime>
 #include <vector>
 #include <fstream>
 #include<limits>
+#include<iostream>
+#include "effolkronium/random.hpp"
 
 #define WIDTH 1024
 #define HEIGHT 768
 
-#define SAMPLES 100
+#define SAMPLES 128
 
-#define MAX_DEPTH 4
+#define MAX_DEPTH 16
 #define MAX_DISTANCE 1000
 
 #define PI 3.14159265358979f
 
 
-#define BLACK vec3(0.1f, 0.1f, 0.1f)
+#define BLACK vec3(0.0f, 0.0f, 0.0f)
 using namespace glm;
+using Random = effolkronium::random_static;
 
 struct Material
 {
@@ -31,15 +35,21 @@ struct Material
     vec3 albedo;
     float a0;
     vec3 F0;
+    bool isMirror;
 
-    Material(float roughness = 0.0, const vec3& albedo = vec3(1, 0, 0), float metallic = 0.0, float a0 = 1.0) : 
+    Material(float roughness = 0.0, const vec3& albedo = vec3(1, 0, 0), float metallic = 0.0, float a0 = 1.0, bool isMirror = false) : 
                 roughness (roughness),
                 metallic(metallic),
                 albedo(albedo),
-                a0(a0)
+                a0(a0),
+                isMirror(isMirror)
                 {
-                    F0 = vec3(0.04, 0.04, 0.04);
-                    F0 = mix(F0, albedo, metallic);
+                    if (isMirror) F0 = vec3(1.0f);
+                    else
+                    {
+                        F0 = vec3(0.04, 0.04, 0.04);
+                        F0 = mix(F0, albedo, metallic);
+                    }
                 }
 
 
@@ -48,8 +58,26 @@ struct Material
 
 
 
-    vec3 CookTorranceBRDF (const vec3& N,const vec3& V,const vec3& H ,const vec3& L)
-    {
+    vec3 CookTorranceBRDF (const vec3& N,const vec3& V,const vec3& L)
+    {   
+        if (isMirror) return vec3(1.0);
+
+        vec3 lightColor = vec3(1.0, 1.0, 1.0);
+        float ambientStrength = 0.2;
+        float specularStrength = 0.8;
+
+        //vec3 ambient = vec3(ambientStrength * lightColor.x, ambientStrength * lightColor.y, ambientStrength * lightColor.z);
+
+        vec3 reflectDir = reflect(-L, N); 
+
+        float spec = pow(max(dot(V, reflectDir), 0.0f), 32);
+        vec3 specular = specularStrength * spec * vec3(lightColor);  
+
+        float diff = max(dot(N, L), 0.0f);
+        vec3 diffuse = diff * vec3(lightColor);
+
+        return(diffuse + specular) * albedo;
+        /*
         vec3 F = fresnelSchlick(std::max(dot(H, V), 0.0f));
         float NDF = DistributionGGX(N, H, roughness);
         float G = GeometrySmith(N, V, L, roughness);
@@ -63,16 +91,18 @@ struct Material
 
         kD = kD * (1.0f - metallic);
 
-        return kD * albedo / PI + specular;
+        return kD * albedo / PI + specular;*/
     }
-
-    
-private:
 
     vec3 fresnelSchlick(float cosTheta)
     {
+        if (isMirror) return F0;
         return F0 + (1.0f - F0) * pow(1.0f - cosTheta, 5.0f);
     }
+    
+private:
+
+    
 
     float DistributionGGX(const vec3& N, const vec3& H, float roughness)
     {
@@ -162,11 +192,14 @@ struct Sphere : Object
 struct Light
 {
     float radius;
+    float intensity;
     vec3 lightPosition;
     vec3 lightColor;
 
 
-    Light(float radius, const vec3& lightPos, const vec3& lightCol):
+    Light(float radius,float intensity, const vec3& lightPos, const vec3& lightCol):
+            radius(radius),
+            intensity(intensity),
             lightPosition(lightPos),
             lightColor(lightCol)
             {}
@@ -181,7 +214,7 @@ struct Light
         return normalize(hit - lightPosition);
     }
 
-    float surfaceArea()
+    float surfaceArea() const
     {
         return 4 * PI * radius * radius;
     }
@@ -245,9 +278,9 @@ struct Plane: Object
     virtual bool intersect(const vec3& ray_origin, const vec3& ray_direction, float &t0) const
     {
         float L = dot(ray_direction, normal());
-        if (L == 0) return false;
+        if ( L <= 1e-3f  && L >= -1e-3f) return false;
         t0 = - (dot(ray_origin, normal()) + D)/L; 
-        return true;
+        return t0 > 0;
     }
 
     
@@ -294,9 +327,9 @@ struct Triangle: Object
 
 vec3 random_unit_vector_in_hemisphere_of(const vec3& normal)
 {
-    float x = (float) (rand() % 200 - 100) / 100.0f;
-    float y = (float) (rand() % 200 - 100) / 100.0f;
-    float z = (float) (rand() % 200 - 100) / 100.0f;
+    float x = (float) Random::get(-1.0f, 1.0f);
+    float y = (float) Random::get(-1.0f, 1.0f);
+    float z = (float) Random::get(-1.0f, 1.0f);
     
     if (dot(normal, vec3(x,y,z)) < 0)
         return normalize(-vec3(x,y,z));
@@ -315,6 +348,7 @@ bool scene_intersect(const vec3 &ray_origin, const vec3& ray_direction, const st
             hit = ray_origin + ray_direction * dist_i;
             N = objects[i]->normal(hit);
             material = objects[i]->material;
+            isLight = false;
         }
     }
 
@@ -330,7 +364,7 @@ bool scene_intersect(const vec3 &ray_origin, const vec3& ray_direction, const st
             lightColor = lights[i].lightColor;
         }
     }
-
+    
     return object_dist < MAX_DISTANCE;
 }
 
@@ -340,7 +374,7 @@ vec3 cast_ray (const vec3& ray_orig, const vec3 &ray_dir, const std::vector<Obje
 {
     vec3 point, N;
     Material material;
-    bool isLight;
+    bool isLight = false;
     vec3 lightColor;
 
     if (depth > MAX_DEPTH || !scene_intersect(ray_orig, ray_dir, objects, lights, point, N, material, isLight, lightColor))
@@ -350,31 +384,66 @@ vec3 cast_ray (const vec3& ray_orig, const vec3 &ray_dir, const std::vector<Obje
 
     if (isLight)
     {
-        return lightColor;
+        float D = distance(prevHit_pos, point);
+        float pE = D * D/ (dot(N, -ray_dir));
+        float pI = dot(prevHit_norm, ray_dir)/ PI;
+        float wI = pI*pI/(pE*pE + pI*pI);
+        return lightColor /** wI*/;
     }
 
     vec3 L0 = vec3(0.0);
     vec3 BDRF = vec3();
-    for (size_t i; i < lights.size(); i++)
+    vec3 new_ray_dir = !material.isMirror? random_unit_vector_in_hemisphere_of(N) : normalize(reflect(ray_dir, N));
+    float cosTheta = dot(new_ray_dir, N);
+
+    for (size_t i = 0; i < lights.size(); i++)
     {
         vec3 L = lights[i].lightPosition - point;
         vec3 H = normalize(ray_dir + L);
+        vec3 an_point;
+        vec3 an_N;
+        Material an_mat;
 
-        float distance = length(L);
+        float distance    = length(lights[i].lightPosition - point);
         float attenuation = 1.0 / (distance * distance);
-        vec3 radiance = lights[i].lightColor * attenuation;
+        vec3 radiance     = lights[i].lightColor * attenuation * lights[i].intensity;   
 
-        float NdotL = std::max(dot(N, L), 0.0f);
         
-        L0 += material.CookTorranceBRDF(N, ray_dir, H, L) * radiance * NdotL;
+        bool shadow = scene_intersect(point + vec3(1e-4), normalize(L), objects, lights, an_point, an_N, an_mat, isLight, lightColor) && !isLight;
+        float kSh = 1.0;
+        if (shadow)
+        {
+            kSh = 1e-3;
+            continue;
+        }
+
+        //std::cout<< "not shadow\n";
+        vec3 sdir = normalize(L);
+        float cosTheta1 =fabs( dot(sdir, an_N));
+        float cosTheta2 = fabs(dot(sdir, N));
+        
+        //float distance = length(L);
+        float lgtPdf =  distance * distance/ cosTheta1;
+        vec3 lgtVal = lights[i].intensity * (material.CookTorranceBRDF(N, ray_dir,normalize(L)) * cosTheta2/PI);
+
+        float NdotL = max(dot(N, L), 0.0f);  
+  
+        //L0 += kSh * material.CookTorranceBRDF(N, ray_dir,normalize(L)) * radiance * NdotL;
+
+        float pI = cosTheta/PI;
+        float wE = lgtPdf * lgtPdf / (lgtPdf * lgtPdf + pI * pI);
+        L0 += kSh*wE *lgtVal/lgtPdf;
     }
 
-    vec3 ambient = vec3(0.03) * material.albedo * material.a0;
-    vec3 color = ambient + L0;
+    //vec3 ambient = vec3(0.05) * material.albedo * material.a0;
+    //vec3 color = ambient + L0;
     
     // Gamma-correction
-    color = color / (color + vec3(1.0));
-    color = pow(color, vec3(1.0/2.2)); 
+    L0 = L0 / (L0 + vec3(1.0));
+    L0 = pow(L0, vec3(1.0/1.6)); 
+
+    //std::cout<< "(" << color.x << ", " << color.y << ", " << color.z << ")\n";
+    
     /*
     vec3 reflect_dir = normalize(reflect(ray_dir, N));
     vec3 refract_dir = normalize(refract(ray_dir, N, material.refractive_index));
@@ -382,31 +451,41 @@ vec3 cast_ray (const vec3& ray_orig, const vec3 &ray_dir, const std::vector<Obje
     vec3 refract_orig = dot(refract_dir, N) < 0 ? point - N * 1e-3 : point + N * 1e-3;
     vec3 reflect_color = cast_ray(reflect_orig, reflect_dir, spheres, depth + 1);
     vec3 refract_color = cast_ray(refract_orig, refract_dir, spheres, depth + 1);*/
-    vec3 new_ray_dir = random_unit_vector_in_hemisphere_of(N);
-    return color + material.F0 * cast_ray(point, new_ray_dir, objects, lights, depth + 1, point, N);    
+    
+
+    return  (!material.isMirror ? L0 : vec3(0.0)) + material.CookTorranceBRDF(N, ray_dir, new_ray_dir) * cast_ray(point, new_ray_dir, objects, lights, depth + 1, point, N);    
 }
+
+
+//vec3 light_trace ()
 
 
 void render (const std::vector<Object*>& objects, const std::vector<Light> &lights)
 {
-    const float fov = PI / 3.;
+    const float fov = PI / 2.;
     std::vector<vec3> framebuffer(WIDTH * HEIGHT);
-
+    omp_set_num_threads(8);
     #pragma omp parallel for
+   /// #pragma acc kernels loop independent
     for (size_t j = 0; j < HEIGHT; j++)
         for (size_t i = 0; i < WIDTH; i++)
         {
-            float dir_x = (i + 0.5) - WIDTH/2.;
-            float dir_y = -(j + 0.5) + HEIGHT/2.;
-            float dir_z = -HEIGHT/ (2. * tan(fov/2.));
-            vec3 direction = vec3(dir_x, dir_y, dir_z);
+            float dir_x = (i + 0.5) - (float) WIDTH/2.;
+            float dir_y = -(j + 0.5) + (float) HEIGHT/2.;
+            float dir_z = -(float)WIDTH/ (tan(fov/2.));
+            vec3 direction = normalize(vec3(dir_x, dir_y, dir_z));
             framebuffer[i + j * WIDTH] = vec3(0.0);
+            //std::cout<< "(" << direction.x << ", " << direction.y << ", " << framebuffer[i + j * WIDTH].z << ")\n";
             for (int k = 0; k < SAMPLES; k++)
             {
                 srand(time(NULL));
                 framebuffer[i + j* WIDTH] += cast_ray (vec3(0.0), direction, objects, lights);
             }
-            framebuffer[i + j * WIDTH] /= SAMPLES;
+            vec3 color =  framebuffer[i + j * WIDTH] / (float) SAMPLES;
+            //color = color / (color + vec3(1.0));
+            //color = pow(color, vec3(1.0/2.2)); 
+            framebuffer[i + j * WIDTH] = color;
+           // std::cout<< "(" << framebuffer[i + j * WIDTH].x << ", " << framebuffer[i + j * WIDTH].y << ", " << framebuffer[i + j * WIDTH].z << ")\n";
         }
 
     std::ofstream ofs;

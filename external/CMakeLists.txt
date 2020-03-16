@@ -60,4 +60,6 @@ target_link_libraries(GLEW_1130
 
 #add_subdirectory( assimp-5.0.1/ )
 
+add_subdirectory(random-master)
+
 

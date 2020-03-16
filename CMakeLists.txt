@@ -11,25 +11,23 @@ include_directories(
 	external/assimp-5.0.1/include/
 	external/assimp-5.0.1/build/code
 	external/assimp-5.0.1/build/include
+	external/RandLib-v.1.0/
+	external/random-master/include
 	.
 )
-
+SET(MYCOMPILE_FLAGS "-g -fopenmp -O2")
 set(ALL_LIBS
 	${OPENGL_LIBRARY}
 	glfw
 	GLEW_1130
+	effolkronium_random
 )
-
+SET(CMAKE_CXX_FLAGS  "${CMAKE_CXX_FLAGS} ${MYCOMPILE_FLAGS}")
 add_definitions(
 	-fopenmp
-	-DTW_STATIC
-	-DTW_NO_LIB_PRAGMA
-	-DTW_NO_DIRECT3D
-	-DGLEW_STATIC
-	-D_CRT_SECURE_NO_WARNINGS
 )
-set(ASSIMP_LIBRARY_DIRS "external/assimp-5.0.1/build/code")
-link_directories(${ASSIMP_LIBRARY_DIRS})
+#set(ASSIMP_LIBRARY_DIRS "external/assimp-5.0.1/build/code")
+#link_directories(${ASSIMP_LIBRARY_DIRS})
 
 add_executable(main src/main.cpp)
 
