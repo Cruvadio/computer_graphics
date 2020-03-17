@@ -18,7 +18,7 @@
 
 #define SAMPLES 128
 
-#define MAX_DEPTH 16
+#define MAX_DEPTH 4
 #define MAX_DISTANCE 1000
 
 #define PI 3.14159265358979f
@@ -28,40 +28,140 @@
 using namespace glm;
 using Random = effolkronium::random_static;
 
+
+vec3 CosineSampleHemisphere(float u1, float u2)
+{
+	vec3 dir;
+	float r = sqrt(u1);
+	float phi = 2.0 * PI * u2;
+	dir.x = r * cos(phi);
+	dir.y = r * sin(phi);
+	dir.z = sqrt(max(0.0, 1.0 - dir.x*dir.x - dir.y*dir.y));
+
+	return dir;
+}
+
+
+vec3 UniformSampleSphere(float u1, float u2)
+{
+	float z = 1.0 - 2.0 * u1;
+	float r = sqrt(max(0.f, 1.0f - z * z));
+	float phi = 2.0 * PI * u2;
+	float x = r * cos(phi);
+	float y = r * sin(phi);
+
+	return vec3(x, y, z);
+}
+
 struct Material
 {
     float roughness;
-    float metallic;
+    float kS;
     vec3 albedo;
-    float a0;
-    vec3 F0;
-    bool isMirror;
+    float transparency;
+    vec3 emission;
+    float refractionRate;
 
-    Material(float roughness = 0.0, const vec3& albedo = vec3(1, 0, 0), float metallic = 0.0, float a0 = 1.0, bool isMirror = false) : 
+    Material(const vec3& albedo = vec3(1, 0.4, 0.4),float roughness = 0.0, float kS = 0.0, float transparency = 0.0,const vec3& emission = vec3(0.15),float refrationRate = 245) : 
                 roughness (roughness),
-                metallic(metallic),
+                kS(kS),
                 albedo(albedo),
-                a0(a0),
-                isMirror(isMirror)
-                {
-                    if (isMirror) F0 = vec3(1.0f);
-                    else
-                    {
-                        F0 = vec3(0.04, 0.04, 0.04);
-                        F0 = mix(F0, albedo, metallic);
-                    }
-                }
+                transparency(transparency),
+                emission(emission),
+                refractionRate(refractionRate)
+                {}
 
 
+    float pdf (const vec3& V, const vec3& N,const vec3& L)
+    {
+        if (transparency > 0) return 1.0;
+        float specularAlpha = max(0.001f, roughness);
 
-    
+        float diffuseRatio = 0.5 * (1.0 - kS);
+        float specularRatio = 1.0 - diffuseRatio;
+
+        vec3 H = normalize(L + V);
+
+        float cosTheta = fabs(dot(H, N));
+        float pdfGTR2 = DistributionGGX(N, H, roughness) * cosTheta;
+
+        float pdfSpec = pdfGTR2/ (4.0 * fabs(dot(L, H)));
+        float pdfDiff = fabs(dot(L, N)) * (1.0 / PI);
+
+        return diffuseRatio * pdfDiff + specularRatio * pdfSpec;
+
+    }
 
 
+    vec3 sample (const vec3& V,const vec3& N)
+    {
+        if (transparency > 0)
+        {
+            float n1 = 1.0;
+            float n2 = refractionRate;
+            float R0 = (n1 - n2) / (n1 + n2);
+            R0 *= R0;
+            float theta = dot(V, N);
+            if (theta < 0) return sample(V, -N);
+            float prob = R0 + (1.f - R0) * fresnelSchlick(theta);
+            vec3 dir;
 
-    vec3 CookTorranceBRDF (const vec3& N,const vec3& V,const vec3& L)
+            float eta = n1 / n2;
+            vec3 transDir = normalize(refract(-V, N, eta));
+            float cos2t = 1.0 - eta*eta*(1.0 - theta * theta);
+
+            if (cos2t < 0.0 || Random::get(0, 1) < prob) // Reflection
+            {
+                dir = normalize(reflect(-V, N));
+            }                                   
+            else
+            {
+                dir = transDir;
+            }
+
+            return dir;                                                                                    
+        }
+        vec3 dir;
+
+        float probability = Random::get(0.f, 1.f);
+        float diffuseRatio = 0.5 * (1.0 - kS);
+
+        float r1 = Random::get(-1.0f, 1.0f);
+        float r2 = Random::get(-1.0f, 1.0f);
+        vec3 UpVector = abs(N.z) < 0.999 ? vec3(0,0,1) : vec3(1,0,0);
+        vec3 TangentX = normalize(cross(UpVector, N));
+        vec3 TangentY = cross(N, TangentX);
+
+        if (probability < diffuseRatio) //diffuse
+        {
+            dir = CosineSampleHemisphere(r1, r2);
+            dir = TangentX * dir.x + TangentY * dir.y + N * dir.z;
+        }
+        else
+        {
+            float a = max(0.001f, roughness);
+
+            float phi = r1 * 2.0 * PI;
+
+            float cosTheta = sqrt((1.0 - r2) / (1.0 + (a * a - 1.0) * r2));
+            float sinTheta = clamp(sqrt(1.0 - (cosTheta * cosTheta)), 0.0, 1.0);
+            float sinPhi = sin(phi);
+            float cosPhi = cos(phi);
+
+            vec3 H(sinTheta * cosPhi, sinTheta*sinPhi, cosTheta);
+            H = TangentX * H.x + TangentY * H.y + N * H.z;
+
+            dir = 2.0f * dot(V, H) * H - V;
+        }
+        
+        return dir;
+
+    }
+
+    vec3 BRDF (const vec3& N,const vec3& V,const vec3& L)
     {   
-        if (isMirror) return vec3(1.0);
-
+        if (transparency > 0) return albedo;
+        /*
         vec3 lightColor = vec3(1.0, 1.0, 1.0);
         float ambientStrength = 0.2;
         float specularStrength = 0.8;
@@ -77,32 +177,48 @@ struct Material
         vec3 diffuse = diff * vec3(lightColor);
 
         return(diffuse + specular) * albedo;
-        /*
-        vec3 F = fresnelSchlick(std::max(dot(H, V), 0.0f));
-        float NDF = DistributionGGX(N, H, roughness);
-        float G = GeometrySmith(N, V, L, roughness);
+        */
+        vec3 H = normalize(V + L);
 
-        vec3 numerator = NDF * F * G;
-        float denominator = 4.0 * std::max(dot(N, V), 0.0f) * std::max(dot(N, L), 0.0f) + 1e-3f;
-        vec3 specular = numerator / denominator;
+        float NdotL = dot(N, L);
+        float NdotV = dot(N, V);
 
-        vec3 kS = F;
-        vec3 kD = vec3(1.0) - kS;
+        if (NdotL <= 0.0 || NdotV <= 0.0)
+            return vec3 (0.0);
+        float NdotH = dot(N, H);
+        float LdotH = dot(L, H);
 
-        kD = kD * (1.0f - metallic);
+        //specular
+        float specular = 0.8;
+        vec3 specularCol = mix(vec3(1.0) * 0.11f * specular, albedo, kS);
+        float a = max (0.001f, roughness);
+        float FH = fresnelSchlick(NdotV);
+        float Ds = DistributionGGX(N, H, roughness);
+        vec3 Fs = mix(specularCol, vec3(1.0), FH);
 
-        return kD * albedo / PI + specular;*/
+        float rough = (roughness * 0.5 + 0.5);
+        float Gs = GeometrySmith(N, V, L, rough);
+
+
+        return albedo / PI * (1.0f - Fs) + Gs * Fs * Ds;
     }
 
-    vec3 fresnelSchlick(float cosTheta)
+    float fresnelSchlick(float cosTheta)
     {
-        if (isMirror) return F0;
-        return F0 + (1.0f - F0) * pow(1.0f - cosTheta, 5.0f);
+        float m = clamp(1.0 - cosTheta, 0.0, 1.0);
+        float m2 = m * m;
+        return m2 * m2 * m;
     }
     
 private:
 
-    
+    /*float GTR2(float NDotH, float a)
+    {
+	    float a2 = a * a;
+	    float t = 1.0 + (a2 - 1.0)*NDotH*NDotH;
+	    return a2 / (PI * t*t);
+    }*/
+
 
     float DistributionGGX(const vec3& N, const vec3& H, float roughness)
     {
@@ -192,14 +308,15 @@ struct Sphere : Object
 struct Light
 {
     float radius;
+    vec3 emission;
     float intensity;
     vec3 lightPosition;
     vec3 lightColor;
 
 
-    Light(float radius,float intensity, const vec3& lightPos, const vec3& lightCol):
+    Light(float radius,vec3 emission, const vec3& lightPos, const vec3& lightCol):
             radius(radius),
-            intensity(intensity),
+            emission(emission),
             lightPosition(lightPos),
             lightColor(lightCol)
             {}
@@ -207,6 +324,16 @@ struct Light
     bool intersect (const vec3& ray_origin, const vec3& ray_direction, float &t0) const
     {
         return Sphere(lightPosition, radius).intersect(ray_origin, ray_direction, t0);
+    }
+
+    void sampleSphereLight(vec3& pos, vec3& N, vec3& e, float numOfLights)
+    {
+        float r1 = (float)Random::get(-1.f,1.f);
+        float r2 = (float)Random::get(-1.f,1.f);
+
+        pos = lightPosition + UniformSampleSphere(r1, r2) * radius;
+        N = normal(pos);
+        e = emission * numOfLights;
     }
 
     vec3 normal (const vec3& hit) const
@@ -336,6 +463,7 @@ vec3 random_unit_vector_in_hemisphere_of(const vec3& normal)
     return normalize(vec3(x,y,z));
 }
 
+
 bool scene_intersect(const vec3 &ray_origin, const vec3& ray_direction, const std::vector<Object*>& objects, const std::vector<Light> lights, vec3& hit, vec3& N, Material &material, bool& isLight, vec3& lightColor)
 {
     float object_dist = std::numeric_limits<float>::max();
@@ -368,14 +496,71 @@ bool scene_intersect(const vec3 &ray_origin, const vec3& ray_direction, const st
     return object_dist < MAX_DISTANCE;
 }
 
+bool any_intersect(const vec3& origin, const vec3& dir, const std::vector<Object*>& objects, const std::vector<Light>& lights, bool& isLight)
+{
+    float object_dist = std::numeric_limits<float>::max();
+    for (size_t i = 0; i < objects.size(); i++)
+    {
+        float dist_i;
+        if (objects[i]->intersect(origin, dir, dist_i) && dist_i < object_dist)
+        {
+            object_dist = dist_i;
+            isLight = false;
+            
+        }
+    }
+
+    for (size_t i = 0; i < lights.size(); i++)
+    {
+        float dist_i;
+        if (lights[i].intersect(origin, dir, dist_i) && dist_i < object_dist)
+        {
+            object_dist = dist_i;
+            isLight = true;
+        }
+    }
+
+    return object_dist < MAX_DISTANCE;
+}
 
 
-vec3 cast_ray (const vec3& ray_orig, const vec3 &ray_dir, const std::vector<Object*>& objects, const std::vector<Light>& lights, size_t depth = 0, const vec3& prevHit_pos = vec3(), const vec3& prevHit_norm = vec3())
+vec3 direct_light (Light light, const vec3& N, const vec3& V, Material mat, vec3 hit,  const std::vector<Object*>& objects, const std::vector<Light>& lights)
+{
+    float numberOfLights = lights.size();
+    vec3 L(0.0);
+    vec3 lightNormal;
+    vec3 lightSurfacePos;
+    vec3 emission;
+    light.sampleSphereLight(lightSurfacePos, lightNormal, emission, numberOfLights);
+
+    vec3 lightDir = lightSurfacePos - hit;
+    float lightDist = length(lightDir);
+    lightDir = normalize(lightDir);
+
+    if (dot(lightDir, N) <= 0.0 || dot(lightDir, lightNormal) >= 0.0)
+    return L;
+    bool isLight;
+    bool in_shadow = any_intersect(hit, lightDir, objects, lights, isLight) && !isLight;
+
+    if (!in_shadow)
+    {
+        float bsdfPdf = mat.pdf(V, N, lightDir);
+        vec3 f = mat.BRDF(N, V, lightDir);
+        float lightPdf = lightDist * lightDist / (light.surfaceArea() * fabs(dot(lightNormal, lightDir)));
+        L += /*(lightPdf * lightPdf / (lightPdf * lightPdf + bsdfPdf * bsdfPdf)) */ f * (float)fabs(dot(N, L)) * emission / lightPdf;
+    }
+
+    return L;
+}
+
+vec3 path_trace (const vec3& ray_orig, const vec3 &ray_dir, const std::vector<Object*>& objects, const std::vector<Light>& lights, size_t depth = 0,const vec3 throughput = vec3(1.0), const vec3& prevHit_pos = vec3(), const vec3& prevHit_norm = vec3())
 {
     vec3 point, N;
     Material material;
     bool isLight = false;
     vec3 lightColor;
+    vec3 radiance;
+    vec3 through = throughput;
 
     if (depth > MAX_DEPTH || !scene_intersect(ray_orig, ray_dir, objects, lights, point, N, material, isLight, lightColor))
     {
@@ -388,9 +573,25 @@ vec3 cast_ray (const vec3& ray_orig, const vec3 &ray_dir, const std::vector<Obje
         float pE = D * D/ (dot(N, -ray_dir));
         float pI = dot(prevHit_norm, ray_dir)/ PI;
         float wI = pI*pI/(pE*pE + pI*pI);
-        return lightColor /** wI*/;
+        return lightColor;
+    }
+    vec3 V =  - ray_dir; 
+    radiance += material.emission * throughput;
+
+    for (int i = 0; i < lights.size(); i++)
+    {
+        radiance += direct_light(lights[i], N, V, material, point, objects, lights);
     }
 
+    vec3 newDir = material.sample(V, N);
+    float pdf = material.pdf(V, N, newDir);
+    if (pdf > 0.0)
+        through *= material.BRDF(N, V, newDir) * abs(dot(N, newDir)) / pdf;
+    else
+            return radiance;
+
+    return radiance + path_trace(point + newDir * 1e-4f, newDir, objects, lights, depth + 1, through, point, N);
+/*
     vec3 L0 = vec3(0.0);
     vec3 BDRF = vec3();
     vec3 new_ray_dir = !material.isMirror? random_unit_vector_in_hemisphere_of(N) : normalize(reflect(ray_dir, N));
@@ -413,8 +614,8 @@ vec3 cast_ray (const vec3& ray_orig, const vec3 &ray_dir, const std::vector<Obje
         float kSh = 1.0;
         if (shadow)
         {
-            kSh = 1e-3;
-            continue;
+            //kSh = 1e-1;
+            //continue;
         }
 
         //std::cout<< "not shadow\n";
@@ -423,8 +624,8 @@ vec3 cast_ray (const vec3& ray_orig, const vec3 &ray_dir, const std::vector<Obje
         float cosTheta2 = fabs(dot(sdir, N));
         
         //float distance = length(L);
-        float lgtPdf =  distance * distance/ cosTheta1;
-        vec3 lgtVal = lights[i].intensity * (material.CookTorranceBRDF(N, ray_dir,normalize(L)) * cosTheta2/PI);
+        float lgtPdf =  distance * distance/( lights[i].surfaceArea() * cosTheta1);
+        vec3 lgtVal = lights[i].intensity * (material.CookTorranceBRDF(N, -ray_dir,normalize(L)) * cosTheta2/PI);
 
         float NdotL = max(dot(N, L), 0.0f);  
   
@@ -432,11 +633,15 @@ vec3 cast_ray (const vec3& ray_orig, const vec3 &ray_dir, const std::vector<Obje
 
         float pI = cosTheta/PI;
         float wE = lgtPdf * lgtPdf / (lgtPdf * lgtPdf + pI * pI);
-        L0 += kSh*wE *lgtVal/lgtPdf;
+        L0 += wE *lgtVal/lgtPdf;
+        
     }
 
-    //vec3 ambient = vec3(0.05) * material.albedo * material.a0;
-    //vec3 color = ambient + L0;
+
+
+
+    vec3 ambient = vec3(0.05) * material.albedo * material.a0;
+    vec3 color = ambient + L0;
     
     // Gamma-correction
     L0 = L0 / (L0 + vec3(1.0));
@@ -450,14 +655,11 @@ vec3 cast_ray (const vec3& ray_orig, const vec3 &ray_dir, const std::vector<Obje
     vec3 reflect_orig = dot(reflect_dir, N) < 0 ? point - N * 1e-3 : point + N * 1e-3;
     vec3 refract_orig = dot(refract_dir, N) < 0 ? point - N * 1e-3 : point + N * 1e-3;
     vec3 reflect_color = cast_ray(reflect_orig, reflect_dir, spheres, depth + 1);
-    vec3 refract_color = cast_ray(refract_orig, refract_dir, spheres, depth + 1);*/
+    vec3 refract_color = cast_ray(refract_orig, refract_dir, spheres, depth + 1);
     
 
-    return  (!material.isMirror ? L0 : vec3(0.0)) + material.CookTorranceBRDF(N, ray_dir, new_ray_dir) * cast_ray(point, new_ray_dir, objects, lights, depth + 1, point, N);    
+    return  (!material.isMirror ? color : vec3(0.0)) + material.CookTorranceBRDF(N, -ray_dir, new_ray_dir) * cast_ray(point, new_ray_dir, objects, lights, depth + 1, point, N);    */
 }
-
-
-//vec3 light_trace ()
 
 
 void render (const std::vector<Object*>& objects, const std::vector<Light> &lights)
@@ -479,11 +681,11 @@ void render (const std::vector<Object*>& objects, const std::vector<Light> &ligh
             for (int k = 0; k < SAMPLES; k++)
             {
                 srand(time(NULL));
-                framebuffer[i + j* WIDTH] += cast_ray (vec3(0.0), direction, objects, lights);
+                framebuffer[i + j* WIDTH] += path_trace (vec3(0.0), direction, objects, lights);
             }
             vec3 color =  framebuffer[i + j * WIDTH] / (float) SAMPLES;
             //color = color / (color + vec3(1.0));
-            //color = pow(color, vec3(1.0/2.2)); 
+            color = pow(color, vec3(2./1.2)); 
             framebuffer[i + j * WIDTH] = color;
            // std::cout<< "(" << framebuffer[i + j * WIDTH].x << ", " << framebuffer[i + j * WIDTH].y << ", " << framebuffer[i + j * WIDTH].z << ")\n";
         }
