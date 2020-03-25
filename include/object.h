@@ -2,8 +2,8 @@
 #define OBJECT_H_
 
 #include <glm/glm.hpp>
-#include <omp.h>
-//#include <openacc.h>
+//#include <omp.h>
+#include <openacc.h>
 #include<glm/common.hpp>
 #include<cstdlib>
 #include<ctime>
@@ -185,13 +185,11 @@ struct Material
 
         if (NdotL <= 0.0 || NdotV <= 0.0)
             return vec3 (0.0);
-        float NdotH = dot(N, H);
-        float LdotH = dot(L, H);
 
         //specular
         float specular = 0.8;
         vec3 specularCol = mix(vec3(1.0) * 0.11f * specular, albedo, kS);
-        float a = max (0.001f, roughness);
+
         float FH = fresnelSchlick(NdotV);
         float Ds = DistributionGGX(N, H, roughness);
         vec3 Fs = mix(specularCol, vec3(1.0), FH);
@@ -309,7 +307,7 @@ struct Light
 {
     float radius;
     vec3 emission;
-    float intensity;
+    //float intensity;
     vec3 lightPosition;
     vec3 lightColor;
 
@@ -464,7 +462,7 @@ vec3 random_unit_vector_in_hemisphere_of(const vec3& normal)
 }
 
 
-bool scene_intersect(const vec3 &ray_origin, const vec3& ray_direction, const std::vector<Object*>& objects, const std::vector<Light> lights, vec3& hit, vec3& N, Material &material, bool& isLight, vec3& lightColor)
+bool scene_intersect(const vec3 &ray_origin, const vec3& ray_direction, const std::vector<Object*>& objects, const std::vector<Light>& lights, vec3& hit, vec3& N, Material &material, bool& isLight, vec3& lightColor)
 {
     float object_dist = std::numeric_limits<float>::max();
     for (size_t i = 0; i < objects.size(); i++)
@@ -547,7 +545,7 @@ vec3 direct_light (Light light, const vec3& N, const vec3& V, Material mat, vec3
         float bsdfPdf = mat.pdf(V, N, lightDir);
         vec3 f = mat.BRDF(N, V, lightDir);
         float lightPdf = lightDist * lightDist / (light.surfaceArea() * fabs(dot(lightNormal, lightDir)));
-        L += /*(lightPdf * lightPdf / (lightPdf * lightPdf + bsdfPdf * bsdfPdf)) */ f * (float)fabs(dot(N, L)) * emission / lightPdf;
+        L += (lightPdf * lightPdf / (lightPdf * lightPdf + bsdfPdf * bsdfPdf)) * f * (float)fabs(dot(N, L)) * emission / lightPdf;
     }
 
     return L;
@@ -559,13 +557,15 @@ vec3 path_trace (const vec3& ray_orig, const vec3 &ray_dir, const std::vector<Ob
     Material material;
     bool isLight = false;
     vec3 lightColor;
-    vec3 radiance;
+    vec3 radiance = vec3(0.0);
     vec3 through = throughput;
 
-    if (depth > MAX_DEPTH || !scene_intersect(ray_orig, ray_dir, objects, lights, point, N, material, isLight, lightColor))
+    //for (int depth = 0; depth < MAX_DEPTH; depth++)
     {
-        return BLACK; // background color
-    }
+        if (!scene_intersect(ray_orig, ray_dir, objects, lights, point, N, material, isLight, lightColor))
+        {
+            return BLACK;
+        }
 
     if (isLight)
     {
@@ -573,7 +573,7 @@ vec3 path_trace (const vec3& ray_orig, const vec3 &ray_dir, const std::vector<Ob
         float pE = D * D/ (dot(N, -ray_dir));
         float pI = dot(prevHit_norm, ray_dir)/ PI;
         float wI = pI*pI/(pE*pE + pI*pI);
-        return lightColor;
+        return lightColor * wI;
     }
     vec3 V =  - ray_dir; 
     radiance += material.emission * throughput;
@@ -586,7 +586,7 @@ vec3 path_trace (const vec3& ray_orig, const vec3 &ray_dir, const std::vector<Ob
     vec3 newDir = material.sample(V, N);
     float pdf = material.pdf(V, N, newDir);
     if (pdf > 0.0)
-        through *= material.BRDF(N, V, newDir) * abs(dot(N, newDir)) / pdf;
+        through *= material.BRDF(N, V, newDir) * fabs(dot(N, newDir)) / pdf;
     else
             return radiance;
 
@@ -659,6 +659,7 @@ vec3 path_trace (const vec3& ray_orig, const vec3 &ray_dir, const std::vector<Ob
     
 
     return  (!material.isMirror ? color : vec3(0.0)) + material.CookTorranceBRDF(N, -ray_dir, new_ray_dir) * cast_ray(point, new_ray_dir, objects, lights, depth + 1, point, N);    */
+    }
 }
 
 
@@ -666,9 +667,10 @@ void render (const std::vector<Object*>& objects, const std::vector<Light> &ligh
 {
     const float fov = PI / 2.;
     std::vector<vec3> framebuffer(WIDTH * HEIGHT);
-    omp_set_num_threads(8);
-    #pragma omp parallel for
-   /// #pragma acc kernels loop independent
+    //omp_set_num_threads(1024);
+    //#pragma omp parallel for
+    //acc_set_device_type (acc_device_nvidia);
+    #pragma acc kernels loop independent
     for (size_t j = 0; j < HEIGHT; j++)
         for (size_t i = 0; i < WIDTH; i++)
         {
@@ -676,20 +678,19 @@ void render (const std::vector<Object*>& objects, const std::vector<Light> &ligh
             float dir_y = -(j + 0.5) + (float) HEIGHT/2.;
             float dir_z = -(float)WIDTH/ (tan(fov/2.));
             vec3 direction = normalize(vec3(dir_x, dir_y, dir_z));
-            framebuffer[i + j * WIDTH] = vec3(0.0);
+
             //std::cout<< "(" << direction.x << ", " << direction.y << ", " << framebuffer[i + j * WIDTH].z << ")\n";
+            vec3 color =  vec3(0.0);
             for (int k = 0; k < SAMPLES; k++)
             {
-                srand(time(NULL));
-                framebuffer[i + j* WIDTH] += path_trace (vec3(0.0), direction, objects, lights);
+                color += path_trace (vec3(0.0), direction, objects, lights);
             }
-            vec3 color =  framebuffer[i + j * WIDTH] / (float) SAMPLES;
+            color = color / (float)SAMPLES;
             //color = color / (color + vec3(1.0));
             color = pow(color, vec3(2./1.2)); 
             framebuffer[i + j * WIDTH] = color;
            // std::cout<< "(" << framebuffer[i + j * WIDTH].x << ", " << framebuffer[i + j * WIDTH].y << ", " << framebuffer[i + j * WIDTH].z << ")\n";
         }
-
     std::ofstream ofs;
     ofs.open("./out.ppm", std::ios::binary);
     ofs << "P6\n" << WIDTH << " " << HEIGHT << "\n255\n";

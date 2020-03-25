@@ -1,0 +1,546 @@
+#version 450
+#extension GL_ARB_separate_shader_objects:enable
+
+#define WIDTH 1024
+#define HEIGHT 768
+#define WORKGROUP_SIZE 16
+
+layout(local_size_x=WORKGROUP_SIZE,local_size_y=WORKGROUP_SIZE,local_size_z=1)in;
+
+struct Pixel{
+    vec4 value;
+};
+
+layout(std140,binding=0)buffer buf
+{
+    Pixel imageData[];
+};
+
+#define PI 3.14159265358979
+
+#define MAX_DEPTH 4
+#define MAX_DISTANCE 1000
+#define SAMPLES 1
+
+/* Color palette */
+#define BLACK vec3(0.,0.,0.)
+#define WHITE vec3(1.,1.,1.)
+#define RED vec3(1.,0.,0.)
+#define GREEN vec3(0.,1.,0.)
+#define BLUE vec3(0.,0.,1.)
+#define YELLOW vec3(1.,1.,0.)
+#define CYAN vec3(0.,1.,1.)
+#define MAGENTA vec3(1.,0.,1.)
+#define ORANGE vec3(1.,.5,0.)
+#define PURPLE vec3(1.,0.,.5)
+#define LIME vec3(.5,1.,0.)
+#define ACQUA vec3(0.,1.,.5)
+#define VIOLET vec3(.5,0.,1.)
+#define AZUR vec3(0.,.5,1.)
+
+struct Ray
+{vec3 origin;vec3 direction;};
+
+struct Material
+{
+    float roughness;
+    float kS;
+    vec3 albedo;
+    float transparency;
+    vec3 emission;
+    float refractionRate;
+};
+
+Material plastic={0.,1.,WHITE,0.,vec3(.15),1};
+Material green_plastic={0.,1.,GREEN,0.,vec3(.15),1};
+Material red_plastic={0.,1.,RED,0.,vec3(.15),1};
+Material rubber={.8,0.,VIOLET,0.,vec3(.14),1};
+Material glass={0.,0.,WHITE,1.,vec3(.14),1.4874};
+
+struct Sphere
+{
+    vec3 center;
+    float radius;
+    Material mat;
+};
+
+struct Plane
+{
+    vec4 coords;
+    Material mat;
+};
+
+struct Light
+{
+    float radius;
+    vec3 emission;
+    vec3 lightPosition;
+    vec3 lightColor;
+};
+
+vec2 seed;
+vec2 rand_vec;
+highp float rand()
+{
+    seed-=rand_vec;
+    highp float a=12.9898;
+    highp float b=78.233;
+    highp float c=43758.5453;
+    highp float dt=dot(seed.xy,vec2(a,b));
+    highp float sn=mod(dt,3.14);
+    rand_vec = vec2(fract(sin(sn)*c));
+    return rand_vec.x;
+}
+
+vec3 CosineSampleHemisphere(float u1,float u2)
+{
+    vec3 dir;
+    float r=sqrt(u1);
+    float phi=2.*PI*u2;
+    dir.x=r*cos(phi);
+    dir.y=r*sin(phi);
+    dir.z=sqrt(max(0.,1.-dir.x*dir.x-dir.y*dir.y));
+    
+    return dir;
+}
+
+vec3 UniformSampleSphere(float u1,float u2)
+{
+    float z=1.-2.*u1;
+    float r=sqrt(max(0.f,1.f-z*z));
+    float phi=2.*PI*u2;
+    float x=r*cos(phi);
+    float y=r*sin(phi);
+    
+    return vec3(x,y,z);
+}
+
+#define NUM_SPHERES 2
+Sphere spheres[]=
+{
+    {vec3(-3,0,-25),2.f,glass},
+    {vec3(5.,-1.5,-18),2.f,rubber}
+};
+#define NUM_PLANES 5
+Plane planes[]=
+{
+    // floor
+    {vec4(0,1,0,4),red_plastic},
+    // right wall
+    {vec4(-1,0,0,8),plastic},
+    // left wall
+    {vec4(1,0,0,8),plastic},
+    // back wall
+    {vec4(0,0,1,32),green_plastic},
+    // ceiling
+    {vec4(0,-1,0,9),plastic}
+};
+
+#define NUM_LIGHTS 1
+Light lights[]=
+{
+    {.8,vec3(1),vec3(5,8,-25),vec3(1.)}
+};
+
+//
+//  HELP FUNCTIONS FOR BRDF
+//
+float fresnelSchlick(in float cosTheta)
+{
+    float m = clamp(1.0 - cosTheta, 0.0, 1.0);
+    float m2 = m * m;
+    return m2 * m2 * m;
+}
+
+float DistributionGGX(in vec3 N, in vec3 H, in float roughness)
+{
+    float a      = roughness*roughness;
+    float a2     = a*a;
+    float NdotH  = max(dot(N, H), 0.0f);
+    float NdotH2 = NdotH*NdotH;
+    
+    float num   = a2;
+    float denom = (NdotH2 * (a2 - 1.0f) + 1.0f);
+    denom = PI * denom * denom;
+    
+    return num / denom;
+}
+
+float GeometrySchlickGGX(in float NdotV, in float roughness)
+{
+    float r = (roughness + 1.0f);
+    float k = (r*r) / 8.0f;
+    
+    float num   = NdotV;
+    float denom = NdotV * (1.0f - k) + k;
+    
+    return num / denom;
+}
+float GeometrySmith(in vec3 N, in vec3 V, in vec3 L, in float roughness)
+{
+    float NdotV = max(dot(N, V), 0.0f);
+    float NdotL = max(dot(N, L), 0.0f);
+    float ggx2  = GeometrySchlickGGX(NdotV, roughness);
+    float ggx1  = GeometrySchlickGGX(NdotL, roughness);
+    
+    return ggx1 * ggx2;
+}
+
+//
+//  BRDF functions to sample not only diffuse rays
+//
+
+float pdf(in vec3 V,in vec3 N,in vec3 L,in Material mat)
+{
+    if(mat.transparency>0)return 1.;
+    float specularAlpha=max(.001f,mat.roughness);
+    
+    float diffuseRatio=.5*(1.-mat.kS);
+    float specularRatio=1.-diffuseRatio;
+    
+    vec3 H=normalize(L+V);
+    
+    float cosTheta=abs(dot(H,N));
+    float pdfGTR2=DistributionGGX(N,H,mat.roughness)*cosTheta;
+    
+    float pdfSpec=pdfGTR2/(4.*abs(dot(L,H)));
+    float pdfDiff=abs(dot(L,N))*(1./PI);
+    
+    return diffuseRatio*pdfDiff+specularRatio*pdfSpec;
+}
+
+vec3 sampleDir(in vec3 V,in vec3 N,in Material mat)
+{
+    if(mat.transparency>0)
+    {
+        float n1=1.;
+        float n2=mat.refractionRate;
+        float R0=(n1-n2)/(n1+n2);
+        R0*=R0;
+        float theta=dot(V,N);
+        float prob=R0+(1.f-R0)*fresnelSchlick(theta);
+        vec3 dir;
+        
+        float eta=n1/n2;
+        vec3 transDir=normalize(refract(-V,N,eta));
+        float cos2t=1.-eta*eta*(1.-theta*theta);
+        
+        if(cos2t<0.||rand()<prob)// Reflection
+        {
+            dir=normalize(reflect(-V,N));
+        }
+        else
+        {
+            dir=transDir;
+        }
+        
+        return dir;
+    }
+    vec3 dir;
+    
+    float probability=rand();
+    float diffuseRatio=.5*(1.-mat.kS);
+    
+    float r1=rand();
+    float r2=rand();
+    vec3 UpVector=abs(N.z)<.999?vec3(0,0,1):vec3(1,0,0);
+    vec3 TangentX=normalize(cross(UpVector,N));
+    vec3 TangentY=cross(N,TangentX);
+    
+    if(probability<diffuseRatio)//diffuse
+    {
+        dir=CosineSampleHemisphere(r1,r2);
+        dir=TangentX*dir.x+TangentY*dir.y+N*dir.z;
+    }
+    else
+    {
+        float a=max(.001f,mat.roughness);
+        
+        float phi=r1*2.*PI;
+        
+        float cosTheta=sqrt((1.-r2)/(1.+(a*a-1.)*r2));
+        float sinTheta=clamp(sqrt(1.-(cosTheta*cosTheta)),0.,1.);
+        float sinPhi=sin(phi);
+        float cosPhi=cos(phi);
+        
+        vec3 H = vec3(sinTheta*cosPhi,sinTheta*sinPhi,cosTheta);
+        H=TangentX*H.x+TangentY*H.y+N*H.z;
+        
+        dir=2.f*dot(V,H)*H-V;
+    }
+    
+    return dir;
+    
+}
+
+vec3 BRDF (in vec3  N,in vec3  V,in vec3 L,in Material mat)
+{
+    if (mat.transparency > 0) return mat.albedo;
+    /*
+    vec3 lightColor = vec3(1.0, 1.0, 1.0);
+    float ambientStrength = 0.2;
+    float specularStrength = 0.8;
+    
+    //vec3 ambient = vec3(ambientStrength * lightColor.x, ambientStrength * lightColor.y, ambientStrength * lightColor.z);
+    
+    vec3 reflectDir = reflect(-L, N);
+    
+    float spec = pow(max(dot(V, reflectDir), 0.0f), 32);
+    vec3 specular = specularStrength * spec * vec3(lightColor);
+    
+    float diff = max(dot(N, L), 0.0f);
+    vec3 diffuse = diff * vec3(lightColor);
+    
+    return(diffuse + specular) * albedo;
+    */
+    vec3 H=normalize(V+L);
+    
+    float NdotL=dot(N,L);
+    float NdotV=dot(N,V);
+    
+    if(NdotL<=0.||NdotV<=0.)
+    return vec3(0.);
+    
+    //specular
+    float specular=.8;
+    vec3 specularCol=mix(vec3(1.)*.11f*specular,mat.albedo,mat.kS);
+    
+    float FH=fresnelSchlick(NdotV);
+    float Ds=DistributionGGX(N,H,mat.roughness);
+    vec3 Fs=mix(specularCol,vec3(1.),FH);
+    
+    float rough=(mat.roughness*.5+.5);
+    float Gs=GeometrySmith(N,V,L,rough);
+    
+    return mat.albedo/PI*(1.f-Fs)+Gs*Fs*Ds;
+}
+
+//
+//  FUNCTIONS FOT INTERSECTIONS WITH DIFFERENT PRIMITIVES
+//
+
+bool SphereIntersect(in Sphere sp,in Ray ray,out float t0,out vec3 hit,out vec3 N)
+{
+    vec3 L=sp.center-ray.origin;
+    float tca=dot(L,ray.direction);
+    float d2 = dot(L,L)-dot(tca,tca);
+    float dr=sp.radius*sp.radius;
+    if(d2>dr)return false;
+    float thc=sqrt(dr-d2);
+    t0=tca-thc;
+    float t1=tca+thc;
+    if(t0<0)t0=t1;
+    if(t0<0)return false;
+    
+    hit=ray.origin+ray.direction*t0;
+    N=normalize(hit-sp.center);
+    return true;
+}
+
+bool SphereLightIntersect(in Light sp,in Ray ray,out float t0,out vec3 hit,out vec3 N)
+{
+    vec3 L=sp.lightPosition-ray.origin;
+    float tca=dot(L,ray.direction);
+    float d2 = dot(L,L)-dot(tca,tca);
+    float dr=sp.radius*sp.radius;
+    if(d2>dr)return false;
+    float thc=sqrt(dr-d2);
+    t0=tca-thc;
+    float t1=tca+thc;
+    if(t0<0)t0=t1;
+    if(t0<0)return false;
+    
+    hit=ray.origin+ray.direction*t0;
+    N=normalize(hit-sp.lightPosition);
+    return true;
+}
+
+void sampleSphereLight(in Light light,out vec3 pos,out vec3 N,out vec3 e)
+{
+    float r1=rand();
+    float r2=rand();
+    
+    pos=light.lightPosition+UniformSampleSphere(r1,r2)*light.radius;
+    N=normalize(pos-light.lightPosition);
+    e=light.emission * NUM_LIGHTS;
+}
+
+float lightSurfaceArea(in Light light)
+{
+    return 4*PI*light.radius*light.radius;
+}
+
+bool PlaneIntersection(in Plane pl,in Ray ray,out float t0,out vec3 hit,out vec3 N)
+{
+    N=vec3(normalize(pl.coords.xyz));
+    float L=dot(ray.direction,N);
+    if (L == 0) return false;
+    t0=-(dot(ray.origin,N)+pl.coords.w)/L;
+    if(t0<=0)return false;
+    hit=ray.origin+ray.direction*t0;
+    
+    return true;
+}
+
+//
+// SCENE_INTERSECTION
+//
+
+bool sceneIntersect(in Ray ray,
+    out vec3 hit,
+    out vec3 N,
+    out Material mat,
+    out bool isLight,
+out vec3 lightEmission)
+{
+    float objectDist=MAX_DISTANCE;
+    for(int i=0;i<NUM_SPHERES;i++)
+    {
+        float dist_i;
+        if(SphereIntersect(spheres[i],ray,dist_i,hit,N)&&dist_i<objectDist)
+        {
+            objectDist=dist_i;
+            mat=spheres[i].mat;
+            isLight=false;
+        }
+    }
+    
+    for(int i=0;i<NUM_PLANES;i++)
+    {
+        float dist_i;
+        if(PlaneIntersection(planes[i],ray,dist_i,hit,N)&&dist_i<objectDist)
+        {
+            objectDist=dist_i;
+            mat=planes[i].mat;
+            isLight=false;
+        }
+    }
+    
+    for(int i=0 ;i<NUM_LIGHTS;i++)
+    {
+        float dist_i;
+        if(SphereLightIntersect(lights[i],ray,dist_i,hit,N)&&dist_i<objectDist)
+        {
+            objectDist=dist_i;
+            lightEmission=lights[i].emission;
+            isLight=true;
+        }
+    }
+    
+    return objectDist<MAX_DISTANCE;
+}
+
+float fov=PI/2;
+
+vec3 directLight(in Light light,in vec3 N,in vec3 V,in Material mat,in vec3 hit,out float lightPdf)
+{
+    vec3 L = vec3(0.);
+    vec3 lightNormal;
+    vec3 lightSurfacePos;
+    vec3 emission;
+    sampleSphereLight(light,lightSurfacePos,lightNormal,emission);
+    vec3 lightDir=lightSurfacePos-hit;
+    float lightDist=length(lightDir);
+    lightDir=normalize(lightDir);
+    
+    if(dot(lightDir,N)<=0.||dot(lightDir,lightNormal)>=0.)
+    return L;
+    
+    bool isLight;
+    Material a_mat;
+    vec3 a_hit;
+    vec3 a_N;
+    vec3 a_emission;
+    Ray ray = Ray(hit,lightDir);
+    bool inShadow=sceneIntersect(ray,a_hit,a_N,a_mat,isLight,a_emission)&&!isLight;
+    
+    if(!inShadow)
+    {
+        float bsdfPdf=pdf(V,N,lightDir, mat);
+        vec3 f=BRDF(N,V,lightDir, mat);
+        lightPdf=lightDist*lightDist/(lightSurfaceArea(light)*abs(dot(lightNormal,lightDir)));
+        L+=(lightPdf*lightPdf)/(lightPdf*lightPdf+bsdfPdf*bsdfPdf)*f*abs(dot(N,L))*emission/lightPdf;
+    }
+    
+    return L;
+}
+
+vec3 path_trace(in Ray ray)
+{
+    vec3 point,N;
+    Material mat;
+    bool isLight=false;
+    vec3 lightEmission;
+    vec3 radiance=vec3(0.);
+    vec3 throughput=vec3(1.);
+    bool specularBounce=false;
+    
+    float lightPdf;
+    float bsdfPdf;
+    
+    for(int depth=0;depth<MAX_DEPTH;depth++)
+    {
+        if(!sceneIntersect(ray,point,N,mat,isLight,lightEmission))
+        {
+            break;
+        }
+        
+        if(isLight)
+        {
+            if(depth==0||specularBounce)
+            {
+                radiance+=lightEmission*throughput;
+            }
+            else
+            {
+                radiance+=(bsdfPdf*bsdfPdf/(bsdfPdf*bsdfPdf+lightPdf*lightPdf))*lightEmission*throughput;
+            }
+            break;
+        }
+        vec3 V=-ray.direction;
+        radiance+=mat.emission*throughput;
+        
+        for(int i=0;i<NUM_LIGHTS;i++)
+        {
+            radiance+=directLight(lights[i],N,V,mat,point,lightPdf);
+        }
+        if(mat.transparency==0)specularBounce=false;
+        else specularBounce=true;
+        vec3 newDir=sampleDir(V,N, mat);
+        bsdfPdf=pdf(V,N,newDir, mat);
+        if(bsdfPdf>0.)
+            throughput*=BRDF(N,V,newDir,mat)*abs(dot(N,newDir))/bsdfPdf;
+        else
+            break;
+        
+        ray.direction=newDir;
+        ray.origin=point+newDir*.001;
+    }
+    
+    return radiance;
+}
+
+void main()
+{
+    uint idx=WIDTH*gl_GlobalInvocationID.y+gl_GlobalInvocationID.x;
+    if(gl_GlobalInvocationID.x>=WIDTH||gl_GlobalInvocationID.y>=HEIGHT)
+    return;
+    
+    float dir_x=(gl_GlobalInvocationID.x+.5)-WIDTH/2.;
+    float dir_y=(gl_GlobalInvocationID.y+.5)-HEIGHT/2.;
+    float dir_z=-WIDTH/(tan(fov/2.));
+    
+    vec3 direction=normalize(vec3(dir_x,dir_y,dir_z));
+    
+    vec3 color=vec3(0.f);
+    seed=vec2(gl_GlobalInvocationID.x,gl_GlobalInvocationID.y);
+    Ray ray=Ray(vec3(0.),direction);
+    for(int i=0;i<SAMPLES;i++)
+    {
+        color+=path_trace(ray);
+    }
+    
+    color=color/SAMPLES;
+    //color = pow(color, vec3(2./1.2));
+    imageData[idx].value=vec4(color,1.);
+}
