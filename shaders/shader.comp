@@ -3,7 +3,7 @@
 
 #define WIDTH 1024
 #define HEIGHT 768
-#define WORKGROUP_SIZE 16
+#define WORKGROUP_SIZE 8
 
 layout(local_size_x=WORKGROUP_SIZE,local_size_y=WORKGROUP_SIZE,local_size_z=1)in;
 
@@ -18,7 +18,7 @@ layout(std140,binding=0)buffer buf
 
 #define PI 3.14159265358979
 
-#define MAX_DEPTH 4
+#define MAX_DEPTH 2
 #define MAX_DISTANCE 1000
 #define SAMPLES 1
 
@@ -44,18 +44,18 @@ struct Ray
 struct Material
 {
     float roughness;
-    float kS;
+    float metallic;
     vec3 albedo;
     float transparency;
     vec3 emission;
     float refractionRate;
 };
 
-Material plastic={0.,1.,WHITE,0.,vec3(.15),1};
-Material green_plastic={0.,1.,GREEN,0.,vec3(.15),1};
-Material red_plastic={0.,1.,RED,0.,vec3(.15),1};
-Material rubber={.8,0.,VIOLET,0.,vec3(.14),1};
-Material glass={0.,0.,WHITE,1.,vec3(.14),1.4874};
+Material plastic={0.01,0.,WHITE,0.,vec3(0.1),1};
+Material green_plastic={0.01,0.,GREEN,0.,vec3(0.1),1};
+Material red_plastic={0.01,0.,RED,0.,vec3(0.1),1};
+Material rubber={0.7,0.,VIOLET,0.0,vec3(0.1),1};
+Material glass={0.01,0.,WHITE,1.,vec3(0.1),1.45};
 
 struct Sphere
 {
@@ -88,8 +88,9 @@ highp float rand()
     highp float c=43758.5453;
     highp float dt=dot(seed.xy,vec2(a,b));
     highp float sn=mod(dt,3.14);
-    rand_vec = vec2(fract(sin(sn)*c));
-    return rand_vec.x;
+    highp float r = fract(sin(sn)*c);
+    rand_vec -= rand_vec * r * r;
+    return r;
 }
 
 vec3 CosineSampleHemisphere(float u1,float u2)
@@ -127,19 +128,20 @@ Plane planes[]=
     // floor
     {vec4(0,1,0,4),red_plastic},
     // right wall
-    {vec4(-1,0,0,8),plastic},
+    {vec4(-1,0,0,10),plastic},
     // left wall
-    {vec4(1,0,0,8),plastic},
+    {vec4(1,0,0,10),plastic},
     // back wall
     {vec4(0,0,1,32),green_plastic},
     // ceiling
-    {vec4(0,-1,0,9),plastic}
+    {vec4(0,-1,0,12),plastic}
 };
 
-#define NUM_LIGHTS 1
+#define NUM_LIGHTS 2
 Light lights[]=
 {
-    {.8,vec3(1),vec3(5,8,-25),vec3(1.)}
+    {.8,vec3(40),vec3(5,8,-25),vec3(1.)},
+    {.4, vec3(40),vec3( -7, 7, -25), vec3(1.) }
 };
 
 //
@@ -195,7 +197,7 @@ float pdf(in vec3 V,in vec3 N,in vec3 L,in Material mat)
     if(mat.transparency>0)return 1.;
     float specularAlpha=max(.001f,mat.roughness);
     
-    float diffuseRatio=.5*(1.-mat.kS);
+    float diffuseRatio=.5*(1.-mat.metallic);
     float specularRatio=1.-diffuseRatio;
     
     vec3 H=normalize(L+V);
@@ -239,7 +241,7 @@ vec3 sampleDir(in vec3 V,in vec3 N,in Material mat)
     vec3 dir;
     
     float probability=rand();
-    float diffuseRatio=.5*(1.-mat.kS);
+    float diffuseRatio=.5*(1.-mat.metallic);
     
     float r1=rand();
     float r2=rand();
@@ -302,8 +304,8 @@ vec3 BRDF (in vec3  N,in vec3  V,in vec3 L,in Material mat)
     return vec3(0.);
     
     //specular
-    float specular=.8;
-    vec3 specularCol=mix(vec3(1.)*.11f*specular,mat.albedo,mat.kS);
+    float specular=.5;
+    vec3 specularCol=mix(vec3(1.)*.11f*specular,mat.albedo,mat.metallic);
     
     float FH=fresnelSchlick(NdotV);
     float Ds=DistributionGGX(N,H,mat.roughness);
@@ -312,7 +314,7 @@ vec3 BRDF (in vec3  N,in vec3  V,in vec3 L,in Material mat)
     float rough=(mat.roughness*.5+.5);
     float Gs=GeometrySmith(N,V,L,rough);
     
-    return mat.albedo/PI*(1.f-Fs)+Gs*Fs*Ds;
+    return mat.albedo/PI*(1.f-mat.metallic)+Gs*Fs*Ds;
 }
 
 //
@@ -396,9 +398,13 @@ out vec3 lightEmission)
     float objectDist=MAX_DISTANCE;
     for(int i=0;i<NUM_SPHERES;i++)
     {
+        vec3 a_hit;
+        vec3 a_N;
         float dist_i;
-        if(SphereIntersect(spheres[i],ray,dist_i,hit,N)&&dist_i<objectDist)
+        if(SphereIntersect(spheres[i],ray,dist_i,a_hit,a_N)&&dist_i<objectDist)
         {
+            N = a_N;
+            hit = a_hit;
             objectDist=dist_i;
             mat=spheres[i].mat;
             isLight=false;
@@ -407,10 +413,14 @@ out vec3 lightEmission)
     
     for(int i=0;i<NUM_PLANES;i++)
     {
+        vec3 a_hit;
+        vec3 a_N;
         float dist_i;
-        if(PlaneIntersection(planes[i],ray,dist_i,hit,N)&&dist_i<objectDist)
+        if(PlaneIntersection(planes[i],ray,dist_i,a_hit,a_N)&&dist_i<objectDist)
         {
             objectDist=dist_i;
+            hit = a_hit;
+            N = a_N;
             mat=planes[i].mat;
             isLight=false;
         }
@@ -418,9 +428,13 @@ out vec3 lightEmission)
     
     for(int i=0 ;i<NUM_LIGHTS;i++)
     {
+        vec3 a_hit;
+        vec3 a_N;
         float dist_i;
-        if(SphereLightIntersect(lights[i],ray,dist_i,hit,N)&&dist_i<objectDist)
+        if(SphereLightIntersect(lights[i],ray,dist_i,a_hit,a_N)&&dist_i<objectDist)
         {
+            N = a_N;
+            hit = a_hit;
             objectDist=dist_i;
             lightEmission=lights[i].emission;
             isLight=true;
@@ -458,8 +472,8 @@ vec3 directLight(in Light light,in vec3 N,in vec3 V,in Material mat,in vec3 hit,
     {
         float bsdfPdf=pdf(V,N,lightDir, mat);
         vec3 f=BRDF(N,V,lightDir, mat);
-        lightPdf=lightDist*lightDist/(lightSurfaceArea(light)*abs(dot(lightNormal,lightDir)));
-        L+=(lightPdf*lightPdf)/(lightPdf*lightPdf+bsdfPdf*bsdfPdf)*f*abs(dot(N,L))*emission/lightPdf;
+        lightPdf=(lightDist*lightDist)/(lightSurfaceArea(light)*abs(dot(lightNormal,lightDir)));
+        L+=((lightPdf*lightPdf)/(lightPdf*lightPdf+bsdfPdf*bsdfPdf))*f*abs(dot(N,L))*emission/lightPdf;
     }
     
     return L;
@@ -522,6 +536,7 @@ vec3 path_trace(in Ray ray)
 
 void main()
 {
+    rand_vec = vec2(0.0446436,0.033263);
     uint idx=WIDTH*gl_GlobalInvocationID.y+gl_GlobalInvocationID.x;
     if(gl_GlobalInvocationID.x>=WIDTH||gl_GlobalInvocationID.y>=HEIGHT)
     return;
@@ -533,7 +548,7 @@ void main()
     vec3 direction=normalize(vec3(dir_x,dir_y,dir_z));
     
     vec3 color=vec3(0.f);
-    seed=vec2(gl_GlobalInvocationID.x,gl_GlobalInvocationID.y);
+    seed = gl_GlobalInvocationID.xy / vec2(WIDTH, HEIGHT);
     Ray ray=Ray(vec3(0.),direction);
     for(int i=0;i<SAMPLES;i++)
     {

@@ -558,7 +558,7 @@ vec3 path_trace (const vec3& ray_orig, const vec3 &ray_dir, const std::vector<Ob
     bool isLight = false;
     vec3 lightColor;
     vec3 radiance = vec3(0.0);
-    vec3 through = throughput;
+    vec3 through = vec3(1.0);
 
     //for (int depth = 0; depth < MAX_DEPTH; depth++)
     {
@@ -586,7 +586,7 @@ vec3 path_trace (const vec3& ray_orig, const vec3 &ray_dir, const std::vector<Ob
     vec3 newDir = material.sample(V, N);
     float pdf = material.pdf(V, N, newDir);
     if (pdf > 0.0)
-        through *= material.BRDF(N, V, newDir) * fabs(dot(N, newDir)) / pdf;
+        through *= material.BRDF(N, V, newDir) * abs(dot(N, newDir)) / pdf;
     else
             return radiance;
 
