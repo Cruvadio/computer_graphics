@@ -1,12 +1,15 @@
 #include <vulkan/vulkan.h>
 
+#include <glm/glm.hpp>
 #include <vector>
 #include <Bitmap.h>
 #include <string.h>
 #include <stdexcept>
 #include <cmath>
 
+using namespace glm;
 
+const int SAMPLES = 128;
 const int WIDTH = 1024; // Size of rendered mandelbrot set.
 const int HEIGHT = 768; // Size of renderered mandelbrot set.
 const int WORKGROUP_SIZE = 32; // Workgroup size in compute shader.
@@ -38,6 +41,17 @@ private:
     // The pixels of the rendered mandelbrot set are in this format:
     struct Pixel {
         float r, g, b, a;
+        Pixel (const vec4& color) : r(color.x), g(color.y), b(color.z), a(color.w) {}
+        operator vec4()
+        {
+            return vec4(r, g, b, a);
+        }
+    };
+
+    struct UniformBufferObject
+    {
+        vec2 rand_vec;
+        float invSamples;
     };
     
     /*
@@ -61,8 +75,8 @@ private:
     The pipeline specifies the pipeline that all graphics and compute commands pass though in Vulkan.
     We will be creating a simple compute pipeline in this application. 
     */
-    VkPipeline pipeline;
-    VkPipelineLayout pipelineLayout;
+    VkPipeline pipeline[2];
+    VkPipelineLayout pipelineLayout[2];
     VkShaderModule computeShaderModule;
 
     /*
@@ -78,15 +92,17 @@ private:
     A single descriptor represents a single resource, and several descriptors are organized
     into descriptor sets, which are basically just collections of descriptors.
     */
-    VkDescriptorPool descriptorPool;
-    VkDescriptorSet descriptorSet;
-    VkDescriptorSetLayout descriptorSetLayout;
+    VkDescriptorPool descriptorPool[2];
+    VkDescriptorSet descriptorSet[2];
+    VkDescriptorSetLayout descriptorSetLayout[2];
 
     /*
     The mandelbrot set will be rendered to this buffer.
     The memory that backs the buffer is bufferMemory. 
     */
     VkBuffer buffer;
+    VkBuffer uniformBuffer;
+    VkDeviceMemory uniformBufferMemory;
     VkDeviceMemory bufferMemory;
         
     uint32_t bufferSize; // size of `buffer` in bytes.
@@ -122,14 +138,18 @@ public:
         findPhysicalDevice();
         createDevice();
         createBuffer();
+        createUniformBuffer();
         createDescriptorSetLayout();
         createDescriptorSet();
-        createComputePipeline();
+        createComputePipeline();  
         createCommandBuffer();
 
         // Finally, run the recorded command buffer.
-        runCommandBuffer();
-
+        for (int i = 0; i < SAMPLES; i++)
+        {
+            updateUniformData(i + 1);
+            runCommandBuffer();
+        }
         // The former command rendered a mandelbrot set to a buffer.
         // Save that buffer as a png on disk.
         saveRenderedImage(fname);
@@ -149,10 +169,20 @@ public:
         std::vector<unsigned char> image;
         image.reserve(WIDTH * HEIGHT * 4);
         for (int i = 0; i < WIDTH*HEIGHT; i += 1) {
-            image.push_back((unsigned char)(255.0f * (pmappedMemory[i].r)));
-            image.push_back((unsigned char)(255.0f * (pmappedMemory[i].g)));
-            image.push_back((unsigned char)(255.0f * (pmappedMemory[i].b)));
-            image.push_back((unsigned char)(255.0f * (pmappedMemory[i].a)));
+            vec4 color = pmappedMemory[i];
+
+            color /= (float)SAMPLES;
+
+            float m = max(color.x, max(color.y, color.z));
+            if (m > 1) color = color * (1.f/m);
+
+            color = vec4(pow(vec3(color), vec3(1.1/ 1.8)), 1.0);
+
+
+            image.push_back((unsigned char)(255.0f * (color.x)));
+            image.push_back((unsigned char)(255.0f * (color.y)));
+            image.push_back((unsigned char)(255.0f * (color.z)));
+            image.push_back((unsigned char)(255.0f * (color.w)));
         }
         // Done reading, so unmap.
         vkUnmapMemory(device, bufferMemory);
@@ -424,6 +454,36 @@ public:
         return -1;
     }
 
+    void createUniformBuffer()
+    {
+        VkDeviceSize uniBufferSize = sizeof(UniformBufferObject);
+        createBuffer(uniBufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, uniformBuffer, uniformBufferMemory);
+    }
+
+    void createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer& buffer, VkDeviceMemory& bufferMemory) {
+        VkBufferCreateInfo bufferInfo = {};
+        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bufferInfo.size = size;
+        bufferInfo.usage = usage;
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        VK_CHECK_RESULT(vkCreateBuffer(device, &bufferInfo, nullptr, &buffer));
+  
+
+        VkMemoryRequirements memRequirements;
+        vkGetBufferMemoryRequirements(device, buffer, &memRequirements);
+
+        VkMemoryAllocateInfo allocInfo = {};
+        allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocInfo.allocationSize = memRequirements.size;
+        allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, properties);
+
+        VK_CHECK_RESULT(vkAllocateMemory(device, &allocInfo, nullptr, &bufferMemory))
+
+
+        VK_CHECK_RESULT(vkBindBufferMemory(device, buffer, bufferMemory, 0));
+    }
+
     void createBuffer() {
         /*
         We will now create a buffer. We will render the mandelbrot set into this buffer
@@ -436,6 +496,7 @@ public:
         bufferCreateInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT; // buffer is used as a storage buffer.
         bufferCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE; // buffer is exclusive to a single queue family at a time. 
 
+        
         VK_CHECK_RESULT(vkCreateBuffer(device, &bufferCreateInfo, NULL, &buffer)); // create buffer.
 
         /*
@@ -470,6 +531,37 @@ public:
         
         // Now associate that allocated memory with the buffer. With that, the buffer is backed by actual memory. 
         VK_CHECK_RESULT(vkBindBufferMemory(device, buffer, bufferMemory, 0));
+
+
+        // intialize buffer
+        void* mappedMemory = NULL;
+        // Map the buffer memory, so that we can read from it on the CPU.
+        vkMapMemory(device, bufferMemory, 0, bufferSize, 0, &mappedMemory);
+        Pixel* pmappedMemory = (Pixel *)mappedMemory;
+
+        for(int i = 0; i < WIDTH * HEIGHT; i++)
+        {
+            pmappedMemory[i] = vec4(0.0);
+        }
+
+        vkUnmapMemory(device, bufferMemory);
+    }
+
+    void updateUniformData (int sampleNum)
+    {
+        UniformBufferObject ubo = {};
+        float r1 = ((float)rand() / (RAND_MAX));
+        float r2 = ((float)rand() / (RAND_MAX));
+#ifndef NDEBUG
+        //std::cout << "( " << r1 << " " << r2 << " )\n";
+#endif
+        ubo.rand_vec = vec2(r1, r2);
+        ubo.invSamples = 1.0 / (float) sampleNum;
+
+        void* data;
+        vkMapMemory(device, uniformBufferMemory, 0, sizeof(ubo), 0, &data);
+            memcpy(data, &ubo, sizeof(ubo));
+        vkUnmapMemory(device, uniformBufferMemory);
     }
 
     void createDescriptorSetLayout() {
@@ -484,19 +576,26 @@ public:
           layout(std140, binding = 0) buffer buf
         in the compute shader.
         */
-        VkDescriptorSetLayoutBinding descriptorSetLayoutBinding = {};
-        descriptorSetLayoutBinding.binding = 0; // binding = 0
-        descriptorSetLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        descriptorSetLayoutBinding.descriptorCount = 1;
-        descriptorSetLayoutBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        VkDescriptorSetLayoutBinding descriptorSetLayoutBinding[2] = {};
+        descriptorSetLayoutBinding[0].binding = 0; // binding = 0
+        descriptorSetLayoutBinding[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        descriptorSetLayoutBinding[0].descriptorCount = 1;
+        descriptorSetLayoutBinding[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
-        VkDescriptorSetLayoutCreateInfo descriptorSetLayoutCreateInfo = {};
-        descriptorSetLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        descriptorSetLayoutCreateInfo.bindingCount = 1; // only a single binding in this descriptor set layout. 
-        descriptorSetLayoutCreateInfo.pBindings = &descriptorSetLayoutBinding; 
+        descriptorSetLayoutBinding[1].binding = 1; // binding = 1
+        descriptorSetLayoutBinding[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        descriptorSetLayoutBinding[1].descriptorCount = 1;
+        descriptorSetLayoutBinding[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+        VkDescriptorSetLayoutCreateInfo descriptorSetLayoutCreateInfo[2] = {};
+        descriptorSetLayoutCreateInfo[0].sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        descriptorSetLayoutCreateInfo[0].bindingCount = 2; // only a single binding in this descriptor set layout. 
+        descriptorSetLayoutCreateInfo[0].pBindings = descriptorSetLayoutBinding; 
+
+
 
         // Create the descriptor set layout. 
-        VK_CHECK_RESULT(vkCreateDescriptorSetLayout(device, &descriptorSetLayoutCreateInfo, NULL, &descriptorSetLayout));
+        VK_CHECK_RESULT(vkCreateDescriptorSetLayout(device, &descriptorSetLayoutCreateInfo[0], NULL, &descriptorSetLayout[0]));
     }
 
     void createDescriptorSet() {
@@ -508,30 +607,35 @@ public:
         /*
         Our descriptor pool can only allocate a single storage buffer.
         */
-        VkDescriptorPoolSize descriptorPoolSize = {};
-        descriptorPoolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        descriptorPoolSize.descriptorCount = 1;
+        VkDescriptorPoolSize descriptorPoolSize[2] = {};
+        descriptorPoolSize[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        descriptorPoolSize[0].descriptorCount = 1;
 
-        VkDescriptorPoolCreateInfo descriptorPoolCreateInfo = {};
-        descriptorPoolCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        descriptorPoolCreateInfo.maxSets = 1; // we only need to allocate one descriptor set from the pool.
-        descriptorPoolCreateInfo.poolSizeCount = 1;
-        descriptorPoolCreateInfo.pPoolSizes = &descriptorPoolSize;
+        descriptorPoolSize[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        descriptorPoolSize[1].descriptorCount = 1;
+
+        VkDescriptorPoolCreateInfo descriptorPoolCreateInfo[2] = {};
+        descriptorPoolCreateInfo[0].sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        descriptorPoolCreateInfo[0].maxSets = 1; // we only need to allocate one descriptor set from the pool.
+        descriptorPoolCreateInfo[0].poolSizeCount = 2;
+        descriptorPoolCreateInfo[0].pPoolSizes = &descriptorPoolSize[0];
+
 
         // create descriptor pool.
-        VK_CHECK_RESULT(vkCreateDescriptorPool(device, &descriptorPoolCreateInfo, NULL, &descriptorPool));
+        VK_CHECK_RESULT(vkCreateDescriptorPool(device, &descriptorPoolCreateInfo[0], NULL, &descriptorPool[0]));
 
         /*
         With the pool allocated, we can now allocate the descriptor set. 
         */
-        VkDescriptorSetAllocateInfo descriptorSetAllocateInfo = {};
-        descriptorSetAllocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO; 
-        descriptorSetAllocateInfo.descriptorPool = descriptorPool; // pool to allocate from.
-        descriptorSetAllocateInfo.descriptorSetCount = 1; // allocate a single descriptor set.
-        descriptorSetAllocateInfo.pSetLayouts = &descriptorSetLayout;
+        VkDescriptorSetAllocateInfo descriptorSetAllocateInfo[2] = {};
+        descriptorSetAllocateInfo[0].sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO; 
+        descriptorSetAllocateInfo[0].descriptorPool = descriptorPool[0]; // pool to allocate from.
+        descriptorSetAllocateInfo[0].descriptorSetCount = 1; // allocate a single descriptor set.
+        descriptorSetAllocateInfo[0].pSetLayouts = &descriptorSetLayout[0];
+
 
         // allocate descriptor set.
-        VK_CHECK_RESULT(vkAllocateDescriptorSets(device, &descriptorSetAllocateInfo, &descriptorSet));
+        VK_CHECK_RESULT(vkAllocateDescriptorSets(device, &descriptorSetAllocateInfo[0], &descriptorSet[0]));
 
         /*
         Next, we need to connect our actual storage buffer with the descrptor. 
@@ -539,21 +643,32 @@ public:
         */
 
         // Specify the buffer to bind to the descriptor.
-        VkDescriptorBufferInfo descriptorBufferInfo = {};
-        descriptorBufferInfo.buffer = buffer;
-        descriptorBufferInfo.offset = 0;
-        descriptorBufferInfo.range = bufferSize;
+        VkDescriptorBufferInfo descriptorBufferInfo[2] = {};
+        descriptorBufferInfo[0].buffer = buffer;
+        descriptorBufferInfo[0].offset = 0;
+        descriptorBufferInfo[0].range = bufferSize;
 
-        VkWriteDescriptorSet writeDescriptorSet = {};
-        writeDescriptorSet.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writeDescriptorSet.dstSet = descriptorSet; // write to this descriptor set.
-        writeDescriptorSet.dstBinding = 0; // write to the first, and only binding.
-        writeDescriptorSet.descriptorCount = 1; // update a single descriptor.
-        writeDescriptorSet.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; // storage buffer.
-        writeDescriptorSet.pBufferInfo = &descriptorBufferInfo;
+        descriptorBufferInfo[1].buffer = uniformBuffer;
+        descriptorBufferInfo[1].offset = 0;
+        descriptorBufferInfo[1].range = sizeof(UniformBufferObject);
+
+        VkWriteDescriptorSet writeDescriptorSet[2] = {};
+        writeDescriptorSet[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writeDescriptorSet[0].dstSet = descriptorSet[0]; // write to this descriptor set.
+        writeDescriptorSet[0].dstBinding = 0; // write to the first, and only binding.
+        writeDescriptorSet[0].descriptorCount = 1; // update a single descriptor.
+        writeDescriptorSet[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; // storage buffer.
+        writeDescriptorSet[0].pBufferInfo = &descriptorBufferInfo[0];
+        
+        writeDescriptorSet[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writeDescriptorSet[1].dstSet = descriptorSet[0]; // write to this descriptor set.
+        writeDescriptorSet[1].dstBinding = 1; // write to the first, and only binding.
+        writeDescriptorSet[1].descriptorCount = 1; // update a single descriptor.
+        writeDescriptorSet[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; // storage buffer.
+        writeDescriptorSet[1].pBufferInfo = &descriptorBufferInfo[1];
 
         // perform the update of the descriptor set.
-        vkUpdateDescriptorSets(device, 1, &writeDescriptorSet, 0, NULL);
+        vkUpdateDescriptorSets(device, 2, &writeDescriptorSet[0], 0, NULL);
     }
 
     // Read file into array of bytes, and cast to uint32_t*, then return.
@@ -622,24 +737,27 @@ public:
         The pipeline layout allows the pipeline to access descriptor sets. 
         So we just specify the descriptor set layout we created earlier.
         */
-        VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {};
-        pipelineLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipelineLayoutCreateInfo.setLayoutCount = 1;
-        pipelineLayoutCreateInfo.pSetLayouts = &descriptorSetLayout; 
-        VK_CHECK_RESULT(vkCreatePipelineLayout(device, &pipelineLayoutCreateInfo, NULL, &pipelineLayout));
+        VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo[2] = {};
+        pipelineLayoutCreateInfo[0].sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pipelineLayoutCreateInfo[0].setLayoutCount = 1;
+        pipelineLayoutCreateInfo[0].pSetLayouts = &descriptorSetLayout[0]; 
+        VK_CHECK_RESULT(vkCreatePipelineLayout(device, &pipelineLayoutCreateInfo[0], NULL, &pipelineLayout[0]));
+        
 
-        VkComputePipelineCreateInfo pipelineCreateInfo = {};
-        pipelineCreateInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-        pipelineCreateInfo.stage = shaderStageCreateInfo;
-        pipelineCreateInfo.layout = pipelineLayout;
+
+        VkComputePipelineCreateInfo pipelineCreateInfo[2] = {};
+        pipelineCreateInfo[0].sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        pipelineCreateInfo[0].stage = shaderStageCreateInfo;
+        pipelineCreateInfo[0].layout = pipelineLayout[0];
+
 
         /*
         Now, we finally create the compute pipeline. 
         */
         VK_CHECK_RESULT(vkCreateComputePipelines(
             device, VK_NULL_HANDLE,
-            1, &pipelineCreateInfo,
-            NULL, &pipeline));
+            1, pipelineCreateInfo,
+            NULL, pipeline));
     }
 
     void createCommandBuffer() {
@@ -674,15 +792,16 @@ public:
         */
         VkCommandBufferBeginInfo beginInfo = {};
         beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT; // the buffer is only submitted and used once in this application.
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT; // the buffer is only submitted and used once in this application.
         VK_CHECK_RESULT(vkBeginCommandBuffer(commandBuffer, &beginInfo)); // start recording commands.
 
         /*
         We need to bind a pipeline, AND a descriptor set before we dispatch.
         The validation layer will NOT give warnings if you forget these, so be very careful not to forget them.
         */
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descriptorSet, 0, NULL);
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline[0]);
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout[0], 0, 1, &descriptorSet[0], 0, NULL);
+        
 
         /*
         Calling vkCmdDispatch basically starts the compute pipeline, and executes the compute shader.
@@ -725,7 +844,6 @@ public:
         Hence, we use a fence here.
         */
         VK_CHECK_RESULT(vkWaitForFences(device, 1, &fence, VK_TRUE, 100000000000));
-
         vkDestroyFence(device, fence, NULL);
     }
 
@@ -743,13 +861,18 @@ public:
             func(instance, debugReportCallback, NULL);
         }
 
+        vkFreeMemory(device, uniformBufferMemory, NULL);
         vkFreeMemory(device, bufferMemory, NULL);
+        vkDestroyBuffer(device, uniformBuffer, NULL);	
         vkDestroyBuffer(device, buffer, NULL);	
         vkDestroyShaderModule(device, computeShaderModule, NULL);
-        vkDestroyDescriptorPool(device, descriptorPool, NULL);
-        vkDestroyDescriptorSetLayout(device, descriptorSetLayout, NULL);
-        vkDestroyPipelineLayout(device, pipelineLayout, NULL);
-        vkDestroyPipeline(device, pipeline, NULL);
+        for(int i = 0; i < 1; i++)
+        {
+            vkDestroyDescriptorPool(device, descriptorPool[i], NULL);
+            vkDestroyDescriptorSetLayout(device, descriptorSetLayout[i], NULL);
+            vkDestroyPipelineLayout(device, pipelineLayout[i], NULL);
+            vkDestroyPipeline(device, pipeline[i], NULL);
+        }
         vkDestroyCommandPool(device, commandPool, NULL);	
         vkDestroyDevice(device, NULL);
         vkDestroyInstance(instance, NULL);		

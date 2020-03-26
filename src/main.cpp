@@ -4,6 +4,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <vector>
+#include <ctime>
 #include <string>
 #include <unistd.h>
 #include <iostream>
@@ -15,11 +16,10 @@
 int main (int argc, char** argv)
 {
     
+  #ifdef NDEBUG
+  srand(time(NULL));
+  #endif
     ComputeApplication app;
-    float r1 = ((float)rand() / (RAND_MAX));
-    float r2 = ((float)rand() / (RAND_MAX));
-    float r3 = ((float)rand() / (RAND_MAX));
-    std::cout << "(" << r1 << " " << r2 << " " << r3 << ")\n";
   try
   {
     app.run("out.bmp");
