@@ -176,7 +176,7 @@ public:
             float m = max(color.x, max(color.y, color.z));
             if (m > 1) color = color * (1.f/m);
 
-            color = vec4(pow(vec3(color), vec3(1.1/ 1.8)), 1.0);
+            color = vec4(pow(vec3(color), vec3(1./ 2.2)), 1.0);
 
 
             image.push_back((unsigned char)(255.0f * (color.x)));

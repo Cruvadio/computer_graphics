@@ -23,7 +23,7 @@ layout(set = 0, binding = 1) uniform UniformBufferObject
 #define PI 3.14159265358979
 
 #define MAX_DEPTH 4
-#define MAX_DISTANCE 500
+#define MAX_DISTANCE 1000
 #define SAMPLES 64
 
 /* Color palette */
@@ -57,12 +57,12 @@ struct Material
 };
 
 Material plastic={0.02,0.,WHITE,0.,vec3(0.0),1, false};
-Material green_plastic={0.2,0.,GREEN,0.,vec3(0.0),1, false};
+Material green_plastic={0.2,0.,LIME,0.,vec3(0.0),1, false};
 Material red_plastic={0.2,0.,RED,0.,vec3(0.0),1, false};
 Material rubber={0.7,0.,VIOLET,0.0,vec3(0.0),1, false};
-Material glass={0.05,0.,WHITE,1.,vec3(0.0),2.45, false};
+Material glass={0.05,0.,WHITE,1.,vec3(0.0),2.7, false};
 Material gold = {0.2, 1.0, vec3(0.4784, 0.3961, 0.1216), 0, vec3(0), 1, false};
-Material mirror = {0.2, 1.0, WHITE, 0, vec3(0), 1, true};
+Material mirror = {0.01, 1.0, WHITE, 0, vec3(0), 1, true};
 
 
 struct Sphere
@@ -136,13 +136,13 @@ Sphere spheres[]=
 Plane planes[]=
 {
     // floor
-    {vec4(0,1,0,5),red_plastic},
+    {vec4(0,1,0,5),plastic},
     // right wall
-    {vec4(-1,0,0,8),mirror},
+    {vec4(-1,0,0,8),red_plastic},
     // left wall
-    {vec4(1,0,0,8),green_plastic},
+    {vec4(1,0,0,8),mirror},
     // back wall
-    {vec4(0,0,1,35),plastic},
+    {vec4(0,0,1,32),green_plastic},
     // ceiling
     {vec4(0,-1,0,8),plastic}
 };
@@ -150,7 +150,7 @@ Plane planes[]=
 #define NUM_LIGHTS 2
 Light lights[]=
 {
-    {true,vec3(0, 0, -5), vec3(6, 0, 0),vec3(11, 11, 10), vec3(-3, 7.98, -25), 0}
+    {true,vec3(0, 0, -5), vec3(6, 0, 0),vec3(8, 8, 7), vec3(-3, 7.98, -22), 0}
     //{.4, vec3(40, 40, 40),vec3( -7, 12, -25), vec3(1.) },
 };
 //
@@ -359,8 +359,8 @@ bool SphereLightIntersect(in Light sp,in Ray ray,out float t0,out vec3 hit,out v
         vec3 v = sp.v;
         vec3 n = normalize(cross(u, v));
         N = n;
-			if (dot(n, ray.direction) > 0.) // Hide backfacing quad light
-			    return false;
+			//if (dot(n, ray.direction) > 0.) // Hide backfacing quad light
+			   // return false;
 		vec4 plane = vec4(n, dot(n, sp.lightPosition));
 		u *= 1.0f / dot(u, u);
 		v *= 1.0f / dot(v, v);
@@ -496,8 +496,16 @@ out vec3 lightEmission)
             N = a_N;
             hit = a_hit;
             objectDist=dist_i;
-            lightEmission=lights[i].emission;
-            isLight=true;
+            if (dot(a_N, ray.direction) > 0)
+            {
+                isLight = false;
+                mat = Material(0.8, 0.0, WHITE, 0.0, vec3(0), 1, false);
+            }
+            else
+            {     
+                lightEmission=lights[i].emission;
+                isLight=true;
+            }
         }
     }
     
@@ -580,7 +588,7 @@ vec3 path_trace(in Ray ray)
 
         //radiance += mat.albedo * vec3(0.004);
 
-        if(mat.transparency==0)specularBounce=false;
+        if(mat.transparency==0 || !mat.isMirror)specularBounce=false;
         else specularBounce=true;
         vec3 newDir=sampleDir(V,N, mat);
         bsdfPdf=pdf(V,N,newDir, mat);
