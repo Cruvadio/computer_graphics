@@ -22,8 +22,8 @@ layout(set = 0, binding = 1) uniform UniformBufferObject
 } ubo;
 #define PI 3.14159265358979
 
-#define MAX_DEPTH 4
-#define MAX_DISTANCE 1000
+#define MAX_DEPTH 5
+#define MAX_DISTANCE 100
 #define SAMPLES 64
 
 /* Color palette */
@@ -57,10 +57,10 @@ struct Material
 };
 
 Material plastic={0.02,0.,WHITE,0.,vec3(0.0),1, false};
-Material green_plastic={0.2,0.,LIME,0.,vec3(0.0),1, false};
-Material red_plastic={0.2,0.,RED,0.,vec3(0.0),1, false};
+Material green_plastic={0.5,0.,LIME,0.,vec3(0.0),1, false};
+Material red_plastic={0.5,0.,RED,0.,vec3(0.0),1, false};
 Material rubber={0.7,0.,VIOLET,0.0,vec3(0.0),1, false};
-Material glass={0.05,0.,WHITE,1.,vec3(0.0),2.7, false};
+Material glass={0.05,0.,WHITE,1.,vec3(0.0),5.5, false};
 Material gold = {0.2, 1.0, vec3(0.4784, 0.3961, 0.1216), 0, vec3(0), 1, false};
 Material mirror = {0.01, 1.0, WHITE, 0, vec3(0), 1, true};
 
@@ -129,8 +129,8 @@ vec3 UniformSampleSphere(float u1,float u2)
 #define NUM_SPHERES 2
 Sphere spheres[]=
 {
-    {vec3(-3.999,-1.999,-25),3.f,gold},
-    {vec3(5.,-1.999,-20),3.f,glass}
+    {vec3(-3.999,-1.999,-29),3.f,gold},
+    {vec3(4.,-2.,-20),3.f,glass}
 };
 #define NUM_PLANES 5
 Plane planes[]=
@@ -138,16 +138,16 @@ Plane planes[]=
     // floor
     {vec4(0,1,0,5),plastic},
     // right wall
-    {vec4(-1,0,0,8),red_plastic},
+    {vec4(-1,0,0,7),red_plastic},
     // left wall
-    {vec4(1,0,0,8),mirror},
+    {vec4(1,0,0,7),mirror},
     // back wall
-    {vec4(0,0,1,32),green_plastic},
+    {vec4(0,0,1,32), green_plastic},
     // ceiling
     {vec4(0,-1,0,8),plastic}
 };
 
-#define NUM_LIGHTS 2
+#define NUM_LIGHTS 1
 Light lights[]=
 {
     {true,vec3(0, 0, -5), vec3(6, 0, 0),vec3(8, 8, 7), vec3(-3, 7.98, -22), 0}
@@ -623,9 +623,15 @@ void main()
     Ray ray=Ray(vec3(0.),direction);
     for (int i = 0; i < SAMPLES; i++)
     {
-        color += path_trace(ray);
+        vec3 c = path_trace(ray);
+        if (c.x < 0) c.x = 0;
+        if (c.y < 0) c.y = 0;
+        if (c.z < 0) c.z = 0;
+        color += c;
     }
 
     color /= SAMPLES;
+
+    
     imageData[idx].value += vec4(color,1.);
 }

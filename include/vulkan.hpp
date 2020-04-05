@@ -10,9 +10,9 @@
 using namespace glm;
 
 const int SAMPLES = 128;
-const int WIDTH = 1024; // Size of rendered mandelbrot set.
-const int HEIGHT = 768; // Size of renderered mandelbrot set.
-const int WORKGROUP_SIZE = 32; // Workgroup size in compute shader.
+const int WIDTH = 1024; 
+const int HEIGHT = 768; 
+const int WORKGROUP_SIZE = 32; 
 
 #ifdef NDEBUG
 const bool enableValidationLayers = false;
@@ -20,7 +20,6 @@ const bool enableValidationLayers = false;
 const bool enableValidationLayers = true;
 #endif
 
-// Used for validating return values of Vulkan API calls.
 #define VK_CHECK_RESULT(f) 																				\
 {																										\
     VkResult res = (f);																					\
@@ -31,14 +30,9 @@ const bool enableValidationLayers = true;
     }																									\
 }
 
-/*
-The application launches a compute shader that renders the mandelbrot set,
-by rendering it into a storage buffer.
-The storage buffer is then read from the GPU, and saved as .png. 
-*/
+
 class ComputeApplication {
 private:
-    // The pixels of the rendered mandelbrot set are in this format:
     struct Pixel {
         float r, g, b, a;
         Pixel (const vec4& color) : r(color.x), g(color.y), b(color.z), a(color.w) {}
@@ -48,92 +42,56 @@ private:
         }
     };
 
+    // Uniform data for shader to have random vector
     struct UniformBufferObject
     {
         vec2 rand_vec;
         float invSamples;
     };
     
-    /*
-    In order to use Vulkan, you must create an instance. 
-    */
     VkInstance instance;
 
     VkDebugReportCallbackEXT debugReportCallback;
-    /*
-    The physical device is some device on the system that supports usage of Vulkan.
-    Often, it is simply a graphics card that supports Vulkan. 
-    */
+    
     VkPhysicalDevice physicalDevice;
-    /*
-    Then we have the logical device VkDevice, which basically allows 
-    us to interact with the physical device. 
-    */
+    
     VkDevice device;
 
-    /*
-    The pipeline specifies the pipeline that all graphics and compute commands pass though in Vulkan.
-    We will be creating a simple compute pipeline in this application. 
-    */
-    VkPipeline pipeline[2];
-    VkPipelineLayout pipelineLayout[2];
+    
+    VkPipeline pipeline;
+    VkPipelineLayout pipelineLayout;
     VkShaderModule computeShaderModule;
 
-    /*
-    The command buffer is used to record commands, that will be submitted to a queue.
-    To allocate such command buffers, we use a command pool.
-    */
+    
     VkCommandPool commandPool;
     VkCommandBuffer commandBuffer;
 
-    /*
-    Descriptors represent resources in shaders. They allow us to use things like
-    uniform buffers, storage buffers and images in GLSL. 
-    A single descriptor represents a single resource, and several descriptors are organized
-    into descriptor sets, which are basically just collections of descriptors.
-    */
-    VkDescriptorPool descriptorPool[2];
-    VkDescriptorSet descriptorSet[2];
-    VkDescriptorSetLayout descriptorSetLayout[2];
+    
+    VkDescriptorPool descriptorPool;
+    VkDescriptorSet descriptorSet;
+    VkDescriptorSetLayout descriptorSetLayout;
 
-    /*
-    The mandelbrot set will be rendered to this buffer.
-    The memory that backs the buffer is bufferMemory. 
-    */
+    
     VkBuffer buffer;
     VkBuffer uniformBuffer;
     VkDeviceMemory uniformBufferMemory;
     VkDeviceMemory bufferMemory;
         
-    uint32_t bufferSize; // size of `buffer` in bytes.
+    uint32_t bufferSize; 
 
     std::vector<const char *> enabledLayers;
 
-    /*
-    In order to execute commands on a device(GPU), the commands must be submitted
-    to a queue. The commands are stored in a command buffer, and this command buffer
-    is given to the queue. 
-    There will be different kinds of queues on the device. Not all queues support
-    graphics operations, for instance. For this application, we at least want a queue
-    that supports compute operations. 
-    */
-    VkQueue queue; // a queue supporting compute operations.
-
-    /*
-    Groups of queues that have the same capabilities(for instance, they all supports graphics and computer operations),
-    are grouped into queue families. 
     
-    When submitting a command buffer, you must specify to which queue in the family you are submitting to. 
-    This variable keeps track of the index of that queue in its family. 
-    */
+    VkQueue queue; 
+
+    
     uint32_t queueFamilyIndex;
 
 public:
     void run(const char* fname) {
-        // Buffer size of the storage buffer that will contain the rendered mandelbrot set.
+    
         bufferSize = sizeof(Pixel) * WIDTH * HEIGHT;
 
-        // Initialize vulkan:
         createInstance();
         findPhysicalDevice();
         createDevice();
@@ -144,28 +102,24 @@ public:
         createComputePipeline();  
         createCommandBuffer();
 
-        // Finally, run the recorded command buffer.
+        // Making sampling of path tracing. For optimization some of samples made in compute shader
         for (int i = 0; i < SAMPLES; i++)
         {
+
             updateUniformData(i + 1);
             runCommandBuffer();
         }
-        // The former command rendered a mandelbrot set to a buffer.
-        // Save that buffer as a png on disk.
-        saveRenderedImage(fname);
 
-        // Clean up all vulkan resources.
+        saveRenderedImage(fname);
         cleanup();
     }
 
     void saveRenderedImage(const char* fname) {
         void* mappedMemory = NULL;
-        // Map the buffer memory, so that we can read from it on the CPU.
+        
         vkMapMemory(device, bufferMemory, 0, bufferSize, 0, &mappedMemory);
         Pixel* pmappedMemory = (Pixel *)mappedMemory;
 
-        // Get the color data from the buffer, and cast it to bytes.
-        // We save the data to a vector.
         std::vector<unsigned char> image;
         image.reserve(WIDTH * HEIGHT * 4);
         for (int i = 0; i < WIDTH*HEIGHT; i += 1) {
@@ -173,9 +127,11 @@ public:
 
             color /= (float)SAMPLES;
 
-            float m = max(color.x, max(color.y, color.z));
-            if (m > 1) color = color * (1.f/m);
+            // Tone mapping
+            const float exposure = 1.0;
 
+            color = abs(vec4(1.0) - exp( -color * exposure));
+            // Gamma-correction
             color = vec4(pow(vec3(color), vec3(1./ 2.2)), 1.0);
 
 
@@ -184,10 +140,7 @@ public:
             image.push_back((unsigned char)(255.0f * (color.z)));
             image.push_back((unsigned char)(255.0f * (color.w)));
         }
-        // Done reading, so unmap.
         vkUnmapMemory(device, bufferMemory);
-
-        // Now we save the acquired color data to a .png.
         SaveBMP(fname, (uint32_t*) image.data(), WIDTH, HEIGHT);  
     }
 
@@ -209,24 +162,15 @@ public:
     void createInstance() {
         std::vector<const char *> enabledExtensions;
 
-        /*
-        By enabling validation layers, Vulkan will emit warnings if the API
-        is used incorrectly. We shall enable the layer VK_LAYER_LUNARG_standard_validation,
-        which is basically a collection of several useful validation layers.
-        */
         if (enableValidationLayers) {
-            /*
-            We get all supported layers with vkEnumerateInstanceLayerProperties.
-            */
+            
             uint32_t layerCount;
             vkEnumerateInstanceLayerProperties(&layerCount, NULL);
 
             std::vector<VkLayerProperties> layerProperties(layerCount);
             vkEnumerateInstanceLayerProperties(&layerCount, layerProperties.data());
 
-            /*
-            And then we simply check if VK_LAYER_LUNARG_standard_validation is among the supported layers.
-            */
+    
             bool foundLayer = false;
             for (VkLayerProperties prop : layerProperties) {
                 
@@ -242,11 +186,6 @@ public:
             }
             enabledLayers.push_back("VK_LAYER_LUNARG_standard_validation"); // Alright, we can use this layer.
 
-            /*
-            We need to enable an extension named VK_EXT_DEBUG_REPORT_EXTENSION_NAME,
-            in order to be able to print the warnings emitted by the validation layer.
-            So again, we just check if the extension is among the supported extensions.
-            */
             
             uint32_t extensionCount;
             
@@ -269,20 +208,12 @@ public:
             enabledExtensions.push_back(VK_EXT_DEBUG_REPORT_EXTENSION_NAME);
         }		
 
-        /*
-        Next, we actually create the instance.
         
-        */
-        
-        /*
-        Contains application info. This is actually not that important.
-        The only real important field is apiVersion.
-        */
         VkApplicationInfo applicationInfo = {};
         applicationInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-        applicationInfo.pApplicationName = "Hello world app";
+        applicationInfo.pApplicationName = "Path tracer";
         applicationInfo.applicationVersion = 0;
-        applicationInfo.pEngineName = "awesomeengine";
+        applicationInfo.pEngineName = "awesomepathtracerengine";
         applicationInfo.engineVersion = 0;
         applicationInfo.apiVersion = VK_API_VERSION_1_0;;
         
@@ -291,51 +222,35 @@ public:
         createInfo.flags = 0;
         createInfo.pApplicationInfo = &applicationInfo;
         
-        // Give our desired layers and extensions to vulkan.
         createInfo.enabledLayerCount = enabledLayers.size();
         createInfo.ppEnabledLayerNames = enabledLayers.data();
         createInfo.enabledExtensionCount = enabledExtensions.size();
         createInfo.ppEnabledExtensionNames = enabledExtensions.data();
     
-        /*
-        Actually create the instance.
-        Having created the instance, we can actually start using vulkan.
-        */
         VK_CHECK_RESULT(vkCreateInstance(
             &createInfo,
             NULL,
             &instance));
 
-        /*
-        Register a callback function for the extension VK_EXT_DEBUG_REPORT_EXTENSION_NAME, so that warnings emitted from the validation
-        layer are actually printed.
-        */
+
         if (enableValidationLayers) {
             VkDebugReportCallbackCreateInfoEXT createInfo = {};
             createInfo.sType = VK_STRUCTURE_TYPE_DEBUG_REPORT_CALLBACK_CREATE_INFO_EXT;
             createInfo.flags = VK_DEBUG_REPORT_ERROR_BIT_EXT | VK_DEBUG_REPORT_WARNING_BIT_EXT | VK_DEBUG_REPORT_PERFORMANCE_WARNING_BIT_EXT;
             createInfo.pfnCallback = &debugReportCallbackFn;
 
-            // We have to explicitly load this function.
             auto vkCreateDebugReportCallbackEXT = (PFN_vkCreateDebugReportCallbackEXT)vkGetInstanceProcAddr(instance, "vkCreateDebugReportCallbackEXT");
             if (vkCreateDebugReportCallbackEXT == nullptr) {
                 throw std::runtime_error("Could not load vkCreateDebugReportCallbackEXT");
             }
 
-            // Create and register callback.
             VK_CHECK_RESULT(vkCreateDebugReportCallbackEXT(instance, &createInfo, NULL, &debugReportCallback));
         }
     
     }
 
     void findPhysicalDevice() {
-        /*
-        In this function, we find a physical device that can be used with Vulkan.
-        */
-
-        /*
-        So, first we will list all physical devices on the system with vkEnumeratePhysicalDevices .
-        */
+        
         uint32_t deviceCount;
         vkEnumeratePhysicalDevices(instance, &deviceCount, NULL);
         if (deviceCount == 0) {
@@ -345,25 +260,8 @@ public:
         std::vector<VkPhysicalDevice> devices(deviceCount);
         vkEnumeratePhysicalDevices(instance, &deviceCount, devices.data());
 
-        /*
-        Next, we choose a device that can be used for our purposes. 
-        With VkPhysicalDeviceFeatures(), we can retrieve a fine-grained list of physical features supported by the device.
-        However, in this demo, we are simply launching a simple compute shader, and there are no 
-        special physical features demanded for this task.
-        With VkPhysicalDeviceProperties(), we can obtain a list of physical device properties. Most importantly,
-        we obtain a list of physical device limitations. For this application, we launch a compute shader,
-        and the maximum size of the workgroups and total number of compute shader invocations is limited by the physical device,
-        and we should ensure that the limitations named maxComputeWorkGroupCount, maxComputeWorkGroupInvocations and 
-        maxComputeWorkGroupSize are not exceeded by our application.  Moreover, we are using a storage buffer in the compute shader,
-        and we should ensure that it is not larger than the device can handle, by checking the limitation maxStorageBufferRange. 
-        However, in our application, the workgroup size and total number of shader invocations is relatively small, and the storage buffer is
-        not that large, and thus a vast majority of devices will be able to handle it. This can be verified by looking at some devices at_
-        http://vulkan.gpuinfo.org/
-        Therefore, to keep things simple and clean, we will not perform any such checks here, and just pick the first physical
-        device in the list. But in a real and serious application, those limitations should certainly be taken into account.
-        */
         for (VkPhysicalDevice device : devices) {
-            if (true) { // As above stated, we do no feature checks, so just accept.
+            if (true) { 
                 physicalDevice = device;
                 break;
             }
@@ -376,17 +274,14 @@ public:
 
         vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, NULL);
 
-        // Retrieve all queue families.
         std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
         vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, queueFamilies.data());
 
-        // Now find a family that supports compute.
         uint32_t i = 0;
         for (; i < queueFamilies.size(); ++i) {
             VkQueueFamilyProperties props = queueFamilies[i];
 
             if (props.queueCount > 0 && (props.queueFlags & VK_QUEUE_COMPUTE_BIT)) {
-                // found a queue with compute. We're done!
                 break;
             }
         }
@@ -399,53 +294,39 @@ public:
     }
 
     void createDevice() {
-        /*
-        We create the logical device in this function.
-        */
-
-        /*
-        When creating the device, we also specify what queues it has.
-        */
+        
         VkDeviceQueueCreateInfo queueCreateInfo = {};
         queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-        queueFamilyIndex = getComputeQueueFamilyIndex(); // find queue family with compute capability.
+        queueFamilyIndex = getComputeQueueFamilyIndex(); 
         queueCreateInfo.queueFamilyIndex = queueFamilyIndex;
-        queueCreateInfo.queueCount = 1; // create one queue in this family. We don't need more.
-        float queuePriorities = 1.0;  // we only have one queue, so this is not that imporant. 
+        queueCreateInfo.queueCount = 1; 
+        float queuePriorities = 1.0;   
         queueCreateInfo.pQueuePriorities = &queuePriorities;
 
-        /*
-        Now we create the logical device. The logical device allows us to interact with the physical
-        device.
-        */
+
         VkDeviceCreateInfo deviceCreateInfo = {};
 
-        // Specify any desired device features here. We do not need any for this application, though.
         VkPhysicalDeviceFeatures deviceFeatures = {};
 
         deviceCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-        deviceCreateInfo.enabledLayerCount = enabledLayers.size();  // need to specify validation layers here as well.
+        deviceCreateInfo.enabledLayerCount = enabledLayers.size();  
         deviceCreateInfo.ppEnabledLayerNames = enabledLayers.data();
-        deviceCreateInfo.pQueueCreateInfos = &queueCreateInfo; // when creating the logical device, we also specify what queues it has.
+        deviceCreateInfo.pQueueCreateInfos = &queueCreateInfo; 
         deviceCreateInfo.queueCreateInfoCount = 1;
         deviceCreateInfo.pEnabledFeatures = &deviceFeatures;
 
-        VK_CHECK_RESULT(vkCreateDevice(physicalDevice, &deviceCreateInfo, NULL, &device)); // create logical device.
+        VK_CHECK_RESULT(vkCreateDevice(physicalDevice, &deviceCreateInfo, NULL, &device)); 
 
-        // Get a handle to the only member of the queue family.
         vkGetDeviceQueue(device, queueFamilyIndex, 0, &queue);
     }
 
-    // find memory type with desired properties.
+    
     uint32_t findMemoryType(uint32_t memoryTypeBits, VkMemoryPropertyFlags properties) {
         VkPhysicalDeviceMemoryProperties memoryProperties;
 
         vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memoryProperties);
 
-        /*
-        How does this search work?
-        See the documentation of VkPhysicalDeviceMemoryProperties for a detailed description. 
-        */
+
         for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; ++i) {
             if ((memoryTypeBits & (1 << i)) &&
                 ((memoryProperties.memoryTypes[i].propertyFlags & properties) == properties))
@@ -485,57 +366,36 @@ public:
     }
 
     void createBuffer() {
-        /*
-        We will now create a buffer. We will render the mandelbrot set into this buffer
-        in a computer shade later. 
-        */
         
         VkBufferCreateInfo bufferCreateInfo = {};
         bufferCreateInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        bufferCreateInfo.size = bufferSize; // buffer size in bytes. 
-        bufferCreateInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT; // buffer is used as a storage buffer.
-        bufferCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE; // buffer is exclusive to a single queue family at a time. 
+        bufferCreateInfo.size = bufferSize; 
+        bufferCreateInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT; 
+        bufferCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE; 
 
         
-        VK_CHECK_RESULT(vkCreateBuffer(device, &bufferCreateInfo, NULL, &buffer)); // create buffer.
+        VK_CHECK_RESULT(vkCreateBuffer(device, &bufferCreateInfo, NULL, &buffer)); 
 
-        /*
-        But the buffer doesn't allocate memory for itself, so we must do that manually.
-        */
-    
-        /*
-        First, we find the memory requirements for the buffer.
-        */
         VkMemoryRequirements memoryRequirements;
         vkGetBufferMemoryRequirements(device, buffer, &memoryRequirements);
         
-        /*
-        Now use obtained memory requirements info to allocate the memory for the buffer.
-        */
+        
         VkMemoryAllocateInfo allocateInfo = {};
         allocateInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        allocateInfo.allocationSize = memoryRequirements.size; // specify required memory.
-        /*
-        There are several types of memory that can be allocated, and we must choose a memory type that:
-        1) Satisfies the memory requirements(memoryRequirements.memoryTypeBits). 
-        2) Satifies our own usage requirements. We want to be able to read the buffer memory from the GPU to the CPU
-           with vkMapMemory, so we set VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT. 
-        Also, by setting VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, memory written by the device(GPU) will be easily 
-        visible to the host(CPU), without having to call any extra flushing commands. So mainly for convenience, we set
-        this flag.
-        */
+        allocateInfo.allocationSize = memoryRequirements.size; 
+        
         allocateInfo.memoryTypeIndex = findMemoryType(
             memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
 
-        VK_CHECK_RESULT(vkAllocateMemory(device, &allocateInfo, NULL, &bufferMemory)); // allocate memory on device.
+        VK_CHECK_RESULT(vkAllocateMemory(device, &allocateInfo, NULL, &bufferMemory)); 
         
-        // Now associate that allocated memory with the buffer. With that, the buffer is backed by actual memory. 
+        
         VK_CHECK_RESULT(vkBindBufferMemory(device, buffer, bufferMemory, 0));
 
 
-        // intialize buffer
+
         void* mappedMemory = NULL;
-        // Map the buffer memory, so that we can read from it on the CPU.
+
         vkMapMemory(device, bufferMemory, 0, bufferSize, 0, &mappedMemory);
         Pixel* pmappedMemory = (Pixel *)mappedMemory;
 
@@ -552,9 +412,7 @@ public:
         UniformBufferObject ubo = {};
         float r1 = ((float)rand() / (RAND_MAX));
         float r2 = ((float)rand() / (RAND_MAX));
-#ifndef NDEBUG
-        //std::cout << "( " << r1 << " " << r2 << " )\n";
-#endif
+
         ubo.rand_vec = vec2(r1, r2);
         ubo.invSamples = 1.0 / (float) sampleNum;
 
@@ -565,48 +423,29 @@ public:
     }
 
     void createDescriptorSetLayout() {
-        /*
-        Here we specify a descriptor set layout. This allows us to bind our descriptors to 
-        resources in the shader. 
-        */
 
-        /*
-        Here we specify a binding of type VK_DESCRIPTOR_TYPE_STORAGE_BUFFER to the binding point
-        0. This binds to 
-          layout(std140, binding = 0) buffer buf
-        in the compute shader.
-        */
         VkDescriptorSetLayoutBinding descriptorSetLayoutBinding[2] = {};
-        descriptorSetLayoutBinding[0].binding = 0; // binding = 0
+        descriptorSetLayoutBinding[0].binding = 0; 
         descriptorSetLayoutBinding[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         descriptorSetLayoutBinding[0].descriptorCount = 1;
         descriptorSetLayoutBinding[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
-        descriptorSetLayoutBinding[1].binding = 1; // binding = 1
+        descriptorSetLayoutBinding[1].binding = 1; 
         descriptorSetLayoutBinding[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         descriptorSetLayoutBinding[1].descriptorCount = 1;
         descriptorSetLayoutBinding[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
-        VkDescriptorSetLayoutCreateInfo descriptorSetLayoutCreateInfo[2] = {};
-        descriptorSetLayoutCreateInfo[0].sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        descriptorSetLayoutCreateInfo[0].bindingCount = 2; // only a single binding in this descriptor set layout. 
-        descriptorSetLayoutCreateInfo[0].pBindings = descriptorSetLayoutBinding; 
+        VkDescriptorSetLayoutCreateInfo descriptorSetLayoutCreateInfo = {};
+        descriptorSetLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        descriptorSetLayoutCreateInfo.bindingCount = 2; 
+        descriptorSetLayoutCreateInfo.pBindings = descriptorSetLayoutBinding; 
 
 
-
-        // Create the descriptor set layout. 
-        VK_CHECK_RESULT(vkCreateDescriptorSetLayout(device, &descriptorSetLayoutCreateInfo[0], NULL, &descriptorSetLayout[0]));
+        VK_CHECK_RESULT(vkCreateDescriptorSetLayout(device, &descriptorSetLayoutCreateInfo, NULL, &descriptorSetLayout));
     }
 
     void createDescriptorSet() {
-        /*
-        So we will allocate a descriptor set here.
-        But we need to first create a descriptor pool to do that. 
-        */
 
-        /*
-        Our descriptor pool can only allocate a single storage buffer.
-        */
         VkDescriptorPoolSize descriptorPoolSize[2] = {};
         descriptorPoolSize[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         descriptorPoolSize[0].descriptorCount = 1;
@@ -614,35 +453,26 @@ public:
         descriptorPoolSize[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         descriptorPoolSize[1].descriptorCount = 1;
 
-        VkDescriptorPoolCreateInfo descriptorPoolCreateInfo[2] = {};
-        descriptorPoolCreateInfo[0].sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        descriptorPoolCreateInfo[0].maxSets = 1; // we only need to allocate one descriptor set from the pool.
-        descriptorPoolCreateInfo[0].poolSizeCount = 2;
-        descriptorPoolCreateInfo[0].pPoolSizes = &descriptorPoolSize[0];
+        VkDescriptorPoolCreateInfo descriptorPoolCreateInfo = {};
+        descriptorPoolCreateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        descriptorPoolCreateInfo.maxSets = 1; 
+        descriptorPoolCreateInfo.poolSizeCount = 2;
+        descriptorPoolCreateInfo.pPoolSizes = &descriptorPoolSize[0];
 
 
-        // create descriptor pool.
-        VK_CHECK_RESULT(vkCreateDescriptorPool(device, &descriptorPoolCreateInfo[0], NULL, &descriptorPool[0]));
 
-        /*
-        With the pool allocated, we can now allocate the descriptor set. 
-        */
-        VkDescriptorSetAllocateInfo descriptorSetAllocateInfo[2] = {};
-        descriptorSetAllocateInfo[0].sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO; 
-        descriptorSetAllocateInfo[0].descriptorPool = descriptorPool[0]; // pool to allocate from.
-        descriptorSetAllocateInfo[0].descriptorSetCount = 1; // allocate a single descriptor set.
-        descriptorSetAllocateInfo[0].pSetLayouts = &descriptorSetLayout[0];
+        VK_CHECK_RESULT(vkCreateDescriptorPool(device, &descriptorPoolCreateInfo, NULL, &descriptorPool));
+
+        VkDescriptorSetAllocateInfo descriptorSetAllocateInfo = {};
+        descriptorSetAllocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO; 
+        descriptorSetAllocateInfo.descriptorPool = descriptorPool; // pool to allocate from.
+        descriptorSetAllocateInfo.descriptorSetCount = 1; // allocate a single descriptor set.
+        descriptorSetAllocateInfo.pSetLayouts = &descriptorSetLayout;
 
 
-        // allocate descriptor set.
-        VK_CHECK_RESULT(vkAllocateDescriptorSets(device, &descriptorSetAllocateInfo[0], &descriptorSet[0]));
+        VK_CHECK_RESULT(vkAllocateDescriptorSets(device, &descriptorSetAllocateInfo, &descriptorSet));
 
-        /*
-        Next, we need to connect our actual storage buffer with the descrptor. 
-        We use vkUpdateDescriptorSets() to update the descriptor set.
-        */
 
-        // Specify the buffer to bind to the descriptor.
         VkDescriptorBufferInfo descriptorBufferInfo[2] = {};
         descriptorBufferInfo[0].buffer = buffer;
         descriptorBufferInfo[0].offset = 0;
@@ -654,25 +484,22 @@ public:
 
         VkWriteDescriptorSet writeDescriptorSet[2] = {};
         writeDescriptorSet[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writeDescriptorSet[0].dstSet = descriptorSet[0]; // write to this descriptor set.
-        writeDescriptorSet[0].dstBinding = 0; // write to the first, and only binding.
-        writeDescriptorSet[0].descriptorCount = 1; // update a single descriptor.
-        writeDescriptorSet[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; // storage buffer.
+        writeDescriptorSet[0].dstSet = descriptorSet; 
+        writeDescriptorSet[0].dstBinding = 0; 
+        writeDescriptorSet[0].descriptorCount = 1; 
+        writeDescriptorSet[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; 
         writeDescriptorSet[0].pBufferInfo = &descriptorBufferInfo[0];
         
         writeDescriptorSet[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writeDescriptorSet[1].dstSet = descriptorSet[0]; // write to this descriptor set.
-        writeDescriptorSet[1].dstBinding = 1; // write to the first, and only binding.
-        writeDescriptorSet[1].descriptorCount = 1; // update a single descriptor.
-        writeDescriptorSet[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; // storage buffer.
+        writeDescriptorSet[1].dstSet = descriptorSet; 
+        writeDescriptorSet[1].dstBinding = 1; 
+        writeDescriptorSet[1].descriptorCount = 1; 
+        writeDescriptorSet[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; 
         writeDescriptorSet[1].pBufferInfo = &descriptorBufferInfo[1];
 
-        // perform the update of the descriptor set.
         vkUpdateDescriptorSets(device, 2, &writeDescriptorSet[0], 0, NULL);
     }
 
-    // Read file into array of bytes, and cast to uint32_t*, then return.
-    // The data has been padded, so that it fits into an array uint32_t.
     uint32_t* readFile(uint32_t& length, const char* filename) {
 
         FILE* fp = fopen(filename, "rb");
@@ -680,19 +507,16 @@ public:
             printf("Could not find or open file: %s\n", filename);
         }
 
-        // get file size.
         fseek(fp, 0, SEEK_END);
         long filesize = ftell(fp);
         fseek(fp, 0, SEEK_SET);
 
         long filesizepadded = long(ceil(filesize / 4.0)) * 4;
 
-        // read file contents.
         char *str = new char[filesizepadded];
         fread(str, filesize, sizeof(char), fp);
         fclose(fp);
 
-        // data padding. 
         for (int i = filesize; i < filesizepadded; i++) {
             str[i] = 0;
         }
@@ -702,16 +526,8 @@ public:
     }
 
     void createComputePipeline() {
-        /*
-        We create a compute pipeline here. 
-        */
-
-        /*
-        Create a shader module. A shader module basically just encapsulates some shader code.
-        */
         uint32_t filelength;
-        // the code in comp.spv was created by running the command:
-        // glslangValidator.exe -V shader.comp
+
         uint32_t* code = readFile(filelength, "shaders/comp.spv");
         VkShaderModuleCreateInfo createInfo = {};
         createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
@@ -720,108 +536,70 @@ public:
         
         VK_CHECK_RESULT(vkCreateShaderModule(device, &createInfo, NULL, &computeShaderModule));
         delete[] code;
-
-        /*
-        Now let us actually create the compute pipeline.
-        A compute pipeline is very simple compared to a graphics pipeline.
-        It only consists of a single stage with a compute shader. 
-        So first we specify the compute shader stage, and it's entry point(main).
-        */
         VkPipelineShaderStageCreateInfo shaderStageCreateInfo = {};
         shaderStageCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         shaderStageCreateInfo.stage = VK_SHADER_STAGE_COMPUTE_BIT;
         shaderStageCreateInfo.module = computeShaderModule;
         shaderStageCreateInfo.pName = "main";
 
-        /*
-        The pipeline layout allows the pipeline to access descriptor sets. 
-        So we just specify the descriptor set layout we created earlier.
-        */
-        VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo[2] = {};
-        pipelineLayoutCreateInfo[0].sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipelineLayoutCreateInfo[0].setLayoutCount = 1;
-        pipelineLayoutCreateInfo[0].pSetLayouts = &descriptorSetLayout[0]; 
-        VK_CHECK_RESULT(vkCreatePipelineLayout(device, &pipelineLayoutCreateInfo[0], NULL, &pipelineLayout[0]));
+        VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {};
+        pipelineLayoutCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pipelineLayoutCreateInfo.setLayoutCount = 1;
+        pipelineLayoutCreateInfo.pSetLayouts = &descriptorSetLayout; 
+        VK_CHECK_RESULT(vkCreatePipelineLayout(device, &pipelineLayoutCreateInfo, NULL, &pipelineLayout));
         
 
 
-        VkComputePipelineCreateInfo pipelineCreateInfo[2] = {};
-        pipelineCreateInfo[0].sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-        pipelineCreateInfo[0].stage = shaderStageCreateInfo;
-        pipelineCreateInfo[0].layout = pipelineLayout[0];
+        VkComputePipelineCreateInfo pipelineCreateInfo = {};
+        pipelineCreateInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        pipelineCreateInfo.stage = shaderStageCreateInfo;
+        pipelineCreateInfo.layout = pipelineLayout;
 
 
-        /*
-        Now, we finally create the compute pipeline. 
-        */
         VK_CHECK_RESULT(vkCreateComputePipelines(
             device, VK_NULL_HANDLE,
-            1, pipelineCreateInfo,
-            NULL, pipeline));
+            1, &pipelineCreateInfo,
+            NULL, &pipeline));
     }
 
     void createCommandBuffer() {
-        /*
-        We are getting closer to the end. In order to send commands to the device(GPU),
-        we must first record commands into a command buffer.
-        To allocate a command buffer, we must first create a command pool. So let us do that.
-        */
         VkCommandPoolCreateInfo commandPoolCreateInfo = {};
         commandPoolCreateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
         commandPoolCreateInfo.flags = 0;
-        // the queue family of this command pool. All command buffers allocated from this command pool,
-        // must be submitted to queues of this family ONLY. 
+        
         commandPoolCreateInfo.queueFamilyIndex = queueFamilyIndex;
         VK_CHECK_RESULT(vkCreateCommandPool(device, &commandPoolCreateInfo, NULL, &commandPool));
 
-        /*
-        Now allocate a command buffer from the command pool. 
-        */
+
         VkCommandBufferAllocateInfo commandBufferAllocateInfo = {};
         commandBufferAllocateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        commandBufferAllocateInfo.commandPool = commandPool; // specify the command pool to allocate from. 
-        // if the command buffer is primary, it can be directly submitted to queues. 
-        // A secondary buffer has to be called from some primary command buffer, and cannot be directly 
-        // submitted to a queue. To keep things simple, we use a primary command buffer. 
-        commandBufferAllocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        commandBufferAllocateInfo.commandBufferCount = 1; // allocate a single command buffer. 
-        VK_CHECK_RESULT(vkAllocateCommandBuffers(device, &commandBufferAllocateInfo, &commandBuffer)); // allocate command buffer.
+        commandBufferAllocateInfo.commandPool = commandPool; 
 
-        /*
-        Now we shall start recording commands into the newly allocated command buffer. 
-        */
+        commandBufferAllocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        commandBufferAllocateInfo.commandBufferCount = 1; 
+        VK_CHECK_RESULT(vkAllocateCommandBuffers(device, &commandBufferAllocateInfo, &commandBuffer)); 
+
+       
         VkCommandBufferBeginInfo beginInfo = {};
         beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT; // the buffer is only submitted and used once in this application.
-        VK_CHECK_RESULT(vkBeginCommandBuffer(commandBuffer, &beginInfo)); // start recording commands.
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
+        VK_CHECK_RESULT(vkBeginCommandBuffer(commandBuffer, &beginInfo)); 
 
-        /*
-        We need to bind a pipeline, AND a descriptor set before we dispatch.
-        The validation layer will NOT give warnings if you forget these, so be very careful not to forget them.
-        */
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline[0]);
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout[0], 0, 1, &descriptorSet[0], 0, NULL);
+
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descriptorSet, 0, NULL);
         
-
-        /*
-        Calling vkCmdDispatch basically starts the compute pipeline, and executes the compute shader.
-        The number of workgroups is specified in the arguments.
-        If you are already familiar with compute shaders from OpenGL, this should be nothing new to you.
-        */
         vkCmdDispatch(commandBuffer, (uint32_t)ceil(WIDTH / float(WORKGROUP_SIZE)), (uint32_t)ceil(HEIGHT / float(WORKGROUP_SIZE)), 1);
 
-        VK_CHECK_RESULT(vkEndCommandBuffer(commandBuffer)); // end recording commands.
+        VK_CHECK_RESULT(vkEndCommandBuffer(commandBuffer));
     }
 
     void runCommandBuffer() {
-        /*
-        Now we shall finally submit the recorded command buffer to a queue.
-        */
 
         VkSubmitInfo submitInfo = {};
         submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        submitInfo.commandBufferCount = 1; // submit a single command buffer
-        submitInfo.pCommandBuffers = &commandBuffer; // the command buffer to submit.
+        submitInfo.commandBufferCount = 1; 
+        submitInfo.pCommandBuffers = &commandBuffer; 
 
         /*
           We create a fence.
@@ -832,25 +610,13 @@ public:
         fenceCreateInfo.flags = 0;
         VK_CHECK_RESULT(vkCreateFence(device, &fenceCreateInfo, NULL, &fence));
 
-        /*
-        We submit the command buffer on the queue, at the same time giving a fence.
-        */
         VK_CHECK_RESULT(vkQueueSubmit(queue, 1, &submitInfo, fence));
-        /*
-        The command will not have finished executing until the fence is signalled.
-        So we wait here.
-        We will directly after this read our buffer from the GPU,
-        and we will not be sure that the command has finished executing unless we wait for the fence.
-        Hence, we use a fence here.
-        */
+        
         VK_CHECK_RESULT(vkWaitForFences(device, 1, &fence, VK_TRUE, 100000000000));
         vkDestroyFence(device, fence, NULL);
     }
 
     void cleanup() {
-        /*
-        Clean up all Vulkan Resources. 
-        */
 
         if (enableValidationLayers) {
             // destroy callback.
@@ -866,13 +632,10 @@ public:
         vkDestroyBuffer(device, uniformBuffer, NULL);	
         vkDestroyBuffer(device, buffer, NULL);	
         vkDestroyShaderModule(device, computeShaderModule, NULL);
-        for(int i = 0; i < 1; i++)
-        {
-            vkDestroyDescriptorPool(device, descriptorPool[i], NULL);
-            vkDestroyDescriptorSetLayout(device, descriptorSetLayout[i], NULL);
-            vkDestroyPipelineLayout(device, pipelineLayout[i], NULL);
-            vkDestroyPipeline(device, pipeline[i], NULL);
-        }
+        vkDestroyDescriptorPool(device, descriptorPool, NULL);
+        vkDestroyDescriptorSetLayout(device, descriptorSetLayout, NULL);
+        vkDestroyPipelineLayout(device, pipelineLayout, NULL);
+        vkDestroyPipeline(device, pipeline, NULL);
         vkDestroyCommandPool(device, commandPool, NULL);	
         vkDestroyDevice(device, NULL);
         vkDestroyInstance(instance, NULL);		
